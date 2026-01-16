@@ -265,10 +265,17 @@ def visualize_slices(
         axes[1].axis('off')
         plt.colorbar(im2, ax=axes[1])
         
-        im3 = axes[2].imshow(correction_slice, cmap='RdBu', aspect='auto')
-        axes[2].set_title(f'Neural Correction ({plane})')
+        # Neural correction: relative correction factor
+        # Φ_total = Φ_analytical * (1 + correction)
+        # correction > 0: analytical underestimates (needs increase)
+        # correction < 0: analytical overestimates (needs decrease)
+        # correction ≈ 0: analytical is accurate (no correction needed)
+        im3 = axes[2].imshow(correction_slice, cmap='RdBu', aspect='auto', 
+                             vmin=-1.0, vmax=1.0, center=0.0)
+        axes[2].set_title(f'Neural Correction ({plane})\n(relative factor)')
         axes[2].axis('off')
-        plt.colorbar(im3, ax=axes[2])
+        cbar3 = plt.colorbar(im3, ax=axes[2])
+        cbar3.set_label('Correction Factor', rotation=270, labelpad=15)
         
         im4 = axes[3].imshow(error_slice, cmap='hot', aspect='auto')
         axes[3].set_title(f'Error Map ({plane})')
