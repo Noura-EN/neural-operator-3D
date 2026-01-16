@@ -1,0 +1,97 @@
+data:
+  data_dir: data
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+  use_scratch_dir: false
+  scratch_dir: /scratch
+model:
+  backbone: fno
+  geometry_encoder:
+    enabled: true
+    hidden_dim: 64
+    num_layers: 2
+  fno:
+    modes1: 8
+    modes2: 8
+    modes3: 8
+    width: 32
+    fc_dim: 128
+  unet:
+    in_channels: 5
+    base_channels: 32
+    depth: 4
+    dropout: 0.1
+training:
+  epochs: 2
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  scheduler: cosine
+  scheduler_params:
+    T_max: 100
+    eta_min: 1e-6
+  loss_weights:
+    mse: 1.0
+    pde: 0.1
+    charge: 0.01
+  use_amp: false
+  checkpoint_dir: checkpoints
+  checkpoint_freq: 1
+  resume_from: null
+grid:
+  base_resolution:
+  - 192
+  - 96
+  - 96
+  train_resolution:
+  - 64
+  - 64
+  - 64
+  test_resolution:
+  - 192
+  - 96
+  - 96
+  coord_range:
+  - -1.0
+  - 1.0
+  log_conductivity: false
+  conductivity_epsilon: 1e-6
+physics:
+  analytical:
+    epsilon_factor: 0.1
+    current_I: 1.0
+  pde:
+    conductivity_threshold: 1e-6
+  mse:
+    singularity_mask_radius: 3
+  charge:
+    enabled: true
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: logs
+  project_name: neural-operator-3d
+  experiment_name: hybrid_potential_prediction
+  vis_freq: 1
+  vis_slices:
+  - axial
+  - sagittal
+  vis_dir: visualizations
+hpc:
+  detect_automatically: true
+  pbs_nodefile: null
+  master_addr: null
+  master_port: '29500'
+  backend: nccl
+evaluation:
+  resolution_invariance_test: true
+  test_resolutions:
+  - - 192
+    - 96
+    - 96
+  - - 96
+    - 48
+    - 48
