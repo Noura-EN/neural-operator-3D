@@ -1,122 +1,159 @@
-# INSTRUCTIONS: Hybrid SciML for Potential Field Prediction
+# PROMPT: Hybrid SciML for 3D Potential Field Prediction
 
-## 1. Objective
-Build a modular PyTorch framework to predict the total electrical potential ($\Phi_{total}$) in a 3D volume. The approach is hybrid:
-- **Total Potential**: $\Phi_{total} = \Phi_{analytical} \cdot (1 + \Phi_{correction})$
-- **$\Phi_{analytical}$**: Analytical point-source solution in an infinite, homogeneous domain.
-- **$\Phi_{correction}$**: Neural Network (FNO or UNet) predicting a relative correction field to account for heterogeneity ($\sigma$) and domain boundaries/geometry.
+### TL;DR
+- Build a config-driven, modular PyTorch framework that learns the operator mapping \((\sigma, f, X, Y, Z, \Delta x, \Delta y, \Delta z) \rightarrow \Phi_{\text{total}}\) on a 3D domain, supports zero-shot super-resolution, and includes training/eval scripts, logging, masking losses, and tests.
+- Prioritize clarity, modularity, and reproducibility; avoid hard-coding.
+- Deliver runnable training (`scripts/main.py`), zero-shot eval (`scripts/eval_resolution.py`), models (`src/models/`), data pipeline (`src/data/`), utilities (`src/utils/`), configs (`configs/config.yaml`), and tests (`tests/`).
+- Validate both UNet and FNO backbones via iterative 10‑epoch smoke tests on example data until they run without errors
 
+## 1. Role & Context
+You are an expert Senior Research Engineer specializing in Scientific Machine Learning (SciML) and PyTorch. Your task is to implement a **modular, operator-learning framework** to predict the **total electrical potential** \(\Phi_{\text{total}}\) in a **normalized 3D cubic volume** containing a **cylindrical-like geometry**.
 
-## 2. Data & Input Augmentation
-- **Grid Size**: base resolution is $192 \times 96 \times 96$ (Cubic voxel grid).
-- **Input channels (5 total)**:
-    1. **Conductivity ($\sigma$)**: 3D volume. Implementation MUST support optional $\log_{10}(\sigma + \epsilon)$ transformation via config.
-    2. **Source ($f$)**: Voxelized point source (delta function).
-    3. **Coordinates (X, Y, Z)**: 3D meshgrids normalized from $[-1, 1]$. The meshgrid should be generated using torch.meshgrid(..., indexing='ij') to ensure spatial alignment with the voxelized conductivity data. **Essential for resolution-independent FNO performance.**
-- **Ground Truth**: FEM-calculated potential ($\Phi_{FEM}$).
+The underlying physics is governed by a **Poisson-type problem** with **Neumann boundary conditions**:
+\[
+- \nabla \cdot (\sigma \nabla \Phi) = f
+\]
+with **zero-flux** at the boundary between skin and air voxels. The core requirement is **resolution independence / zero-shot super-resolution** via operator learning (e.g., Fourier Neural Operator, FNO): train at base resolution and generalize to higher resolutions **without retraining**.
 
-## 3. Architecture & Resolution Independence
-- **Modular Backbones**: Swap between `3D-UNet` and `3D-FNO`. The code must be structured to swap backbones easily.
-- **Geometry Encoder**: Placeholder `GeometryEncoder(nn.Module)` in `models/geometry.py` to process the structural features of the conductivity map. It should process the $\sigma$ volume into a latent feature map before passing it to the backbone.
-- **Resolution Strategy**:
-    - **Training**: Support training on base resolution OR downsampled (e.g., $96 \times 48 \times 48$).
-    - **Inference**: FNO must accept high-res coordinate grids to evaluate the learned operator at new spatial points (Zero-Shot Super-Resolution).
-    The codebase must support **Zero-Shot Super-Resolution** for the Neural Operator backbone.
+## 2. Mathematical & Physical Specifications
+- **Domain**: 3D voxel grid (base resolution: \(48 \times 48 \times 96\)) in a normalized coordinate cube \([-1, 1]^3\).
+- **Physics**: Potential field governed by conductivity \(\sigma\).
+  - **Isotropic regions**: scalar values (Fat, Bone, Skin, Air).
+  - **Anisotropic (Muscle)**: \(3 \times 3\) diagonal tensor, \(\sigma_{muscle} = \text{diag}([0.2455, 0.2455, 1.2275])\) (ratio 1:1:5).
+- **Boundary Conditions**: Neumann zero-flux (\(\nabla \Phi \cdot \mathbf{n} = 0\)) at domain boundary between skin and air.
+- **Coordinates**: Normalized meshgrids \((X, Y, Z) \in [-1, 1]^3\) with `indexing='ij'`; provided as channels to enable zero-shot super-resolution.
+- **Scale conditioning**: Physical voxel spacing \((\Delta x, \Delta y, \Delta z)\) must be explicitly injected (concatenate to latent or equivalent) to disambiguate scale-dependent gradients.
 
-### 4. Analytical Solver (`utils/analytical.py`)
-Implement the infinite-domain potential function:
-$$\Phi_{analytical}(\mathbf{r}) = \frac{I}{4\pi \sigma_{ref} \sqrt{|\mathbf{r} - \mathbf{r}_s|^2 + \epsilon^2}}$$
+## 3. Data & Input Pipeline
+Implement data handling under `src/data/`.
 
-- **$\sigma_{ref}$**: The reference conductivity. Calculate this as the mean conductivity of the conductive tissues only (ignore "Air" voxels where $\sigma \approx 0$).
-- **Source Centroid**: $\mathbf{r}_s$ should be determined by calculating the center of mass of the non-zero voxels in the source input $f$.
-- **Singularity Softening**: Use a small $\epsilon$ (e.g., $0.1 \times$ voxel size) to prevent numerical overflow at the source center while maintaining a sharp peak for the neural operator to correct.
+### Channels and shapes
+- **Conductivity \(\sigma\)**: voxel map; muscle uses 3 channels for diagonal tensor (or consistent encoding). Shape `(C_sigma, D, H, W)`.
+- **Source \(f\)**: scalar field; shape `(1, D, H, W)`.
+- **Coordinates \(X, Y, Z\)**: normalized meshgrids; shape `(3, D, H, W)`.
+- **Voxel spacing**: vector `(3,)` for \(\Delta x, \Delta y, \Delta z\); later concatenated/conditioned in-network.
+- **Ground truth**: \(\Phi_{FEM}\) with shape `(1, D, H, W)` used as the supervised training target.
 
+### Loader requirements (`src/data/loader.py`)
+- Load \(\sigma, f, X, Y, Z, \text{spacing}, \Phi_{FEM}\).
+- Support both training resolution (e.g., \(48 \times 48 \times 96\)) and higher-resolution eval (e.g., \(96 \times 96 \times 192\)).
+- Device-agnostic moves (cuda/mps/cpu).
+- Provide deterministic seeding hooks from config.
 
-## 5. Physics-Informed Training
-The total loss is a weighted sum: $\mathcal{L} = \lambda_1 \mathcal{L}_{MSE} + \lambda_2 \mathcal{L}_{PDE} + \lambda_3 \mathcal{L}_{Charge}$
+## 4. Model Architecture: Modular backbone strategy
+Implement all model-related code in `src/models/`.
 
-1. **Data Loss ($\mathcal{L}_{MSE}$)**: 
-   - Standard MSE between $\Phi_{total}$ and $\Phi_{FEM}$.
-   - **Singularity Mask**: Mask a 3-voxel radius sphere around the source location $\mathbf{r}_s$ during loss calculation. This ensures the model focuses on the global field rather than trying to over-fit the analytical peak.
+- **Pattern**: Configurable backbone selected via wrapper:
+  - Shared **Geometry Encoder** to process conductivity.
+  - Backbones: **3D-UNet** and **3D-FNO**.
 
-2. **PDE Loss ($\mathcal{L}_{PDE}$)**: 
-   - Voxel-wise residual: $\nabla \cdot (\sigma \nabla \Phi_{total}) - f = 0$.
-   - **Finite Difference**: Use a 7-point central difference stencil for the divergence of the gradient ($\sigma \nabla \Phi$).
-   - **Grid Scaling**: The step size $h$ must be calculated dynamically based on the current grid resolution ($h = \frac{1}{N-1}$).
-   - **Stability Mask**: Only calculate the PDE residual for voxels where $\sigma > \text{threshold}$. 
+- **Geometry Encoder (`geometry.py`)**
+  - `GeometryEncoder(nn.Module)`; 3D conv-based volumetric encoder.
+  - Input: \(\sigma\) channels (including anisotropic components).
+  - Output: high-dimensional feature volume aligned to the grid.
+  - Reusable across backbones.
 
-3. **Conservation of Charge Loss ($\mathcal{L}_{Charge}$)**: 
-   - Instead of a local flux loss, implement a global conservation constraint.
-   - Calculate the total divergence of the predicted current density: $D_{total} = \sum [\nabla \cdot (\sigma \nabla \Phi_{total})]$.
-   - Calculate the total injected current: $S_{total} = \sum f$.
-   - **Loss Component**: $\mathcal{L}_{Charge} = |D_{total} - S_{total}|^2$. 
-   - This ensures the model respects the integral form of the Poisson equation across the entire volume, which is crucial for physical consistency in tissue potential modeling.
+- **Backbone 1: 3D-UNet (`unet.py`)**
+  - Inputs: geometry features, \(f\), \(X, Y, Z\), spacing (concatenate or inject).
+  - Output: \(\Phi_{\text{pred}}\) on the same grid.
+  - Serves as baseline to validate pipeline.
 
-## 6. Execution & Evaluation
-- **Train/Val/Test**: Standard split with performance tracking.
-- **Logging**: Use `Weights & Biases` or `Tensorboard`.
-- **Visuals**: Generate and save 2D slices (XY, YZ planes) comparing Ground Truth, Prediction and Correction term, and Error maps every 10 epochs for both train and val samples. For testing, generate the same, including results for different resolutions
-- **Resolution Invariance**: Ensure FNO can be tested on a different grid resolution if requested (e.g. train on lower resolution, evaluate on higher).
+- **Backbone 2: 3D-FNO (`fno.py`)**
+  - Use `torch.fft.rfftn` / `torch.fft.irfftn` for spectral convolutions (memory-efficient, real-valued symmetry).
+  - Inputs: geometry features, \(f\), \(X, Y, Z\), explicit spacing conditioning.
+  - Output: \(\Phi_{\text{pred}}\) on same grid.
+  - Must train at base resolution and infer at higher resolutions without retraining (zero-shot super-resolution).
 
-## 7. Execution & Evaluation
-- **Logging**: Weights & Biases or Tensorboard.
-- **Visuals**: Every 10 epochs, save Axial and Sagittal slices showing:
-    - [Ground Truth] | [Predicted Total] | [Neural Correction] | [Error Map]
-- **Testing**: Run both normal testing and a "Resolution Invariance Test" where a model trained at $96 \times 48 \times 48$ is evaluated at $192 \times 96 \times 96$.
+- **Model Wrapper (`wrapper.py`)**
+  - Accept config specifying `"unet"` or `"fno"`.
+  - Instantiate `GeometryEncoder` + chosen backbone.
+  - Expose `forward(self, sigma, f, coords, spacing, **kwargs) -> Phi_pred`.
+  - Handle internal conditioning concatenation (including spacing).
 
-## 8. Project Structure
-- `/data`: Voxelized .npy or .h5 files.
-- `/src/models`: `unet.py`, `fno.py`, `geometry.py`, `hybrid.py`
-- `/src/utils`: `physics.py` (PDE/Flux loss), `analytical.py` (Solver), `data_utils.py`
-- `main.py`: Entry point for training/testing.
-- `config.yaml` All hyperparameters (learning rate, λ weights, paths, resolution switches) must be centrally managed in a config.yaml file
+## 5. Masking & Physics-Informed Training
+Implement losses/masking in `src/utils/masking.py` and `src/utils/metrics.py`.
 
-### Implementation Note for `src/models/hybrid.py`:
-The `HybridWrapper` class is the central integration point. It must:
-1. Accept the 5-channel input tensor.
-2. Extract the Normalized Coordinates to compute the `analytical_potential` on-the-fly.
-3. Pass the input to the chosen Backbone (FNO or UNet) to obtain the `relative_correction`.
-4. Combine them: `total_potential = analytical_potential * (1 + relative_correction)`.
-5. Ensure all components remain on the same device (CPU/GPU) and maintain gradient flow for the PDE loss.
+- **Weighted Masked MSE**:
+  \[
+  \mathcal{L} = \lambda \cdot \text{MSE}(\Phi_{pred} \cdot M_{combined}, \Phi_{FEM} \cdot M_{combined})
+  \]
+    - **Masks**:
+    - Muscle mask \(M_m\): binary where \(\sigma\) corresponds to muscle (match anisotropic tensor).
+    - Singularity mask \(M_s\): binary sphere radius \(R=3\) voxels around source peak \(\mathbf{r}_s\) (infer from peak of \(f\)).
+    - Combined \(M_{combined} = M_m \cap \neg M_s\).
+- **Gradient consistency loss** \(\mathcal{L}_{grad}\):
+  - Compute \(\mathbf{E} = -\nabla \Phi\) with `torch.gradient`, respecting spacing.
+  - MSE between predicted and ground-truth gradients, weighted \(\lambda_{grad} = 0.1\).
 
-### 9. Hybrid Execution & HPC Compatibility (PBSPro)
+## 6. Execution, Logging & Evaluation
+- **Training entry (`scripts/main.py`)**
+  - Config-driven CLI.
+  - Load hyperparameters from `configs/config.yaml`.
+  - Build datasets/dataloaders, model via wrapper, optimizer/scheduler, losses.
+  - Run train/val loops with logging.
 
-The codebase must be "environment-aware," capable of running on a local workstation (Windows/Mac/Linux) or a High-Performance Computing (HPC) cluster using the **PBSPro** workload manager.
+- **Configuration (`configs/config.yaml`)**
+  - Hyperparameters: lr, batch size, epochs, FNO modes, model type (unet/fno), loss weights, logging/validation frequency, experiment name, seeds, device preference.
 
-### A. Environment Detection & Device Management
-- **Hardware Agnostic**: Implement a detection utility that checks for the existence of `PBS_NODEFILE`. 
-- **Local Mode**: If no cluster environment is detected, default to a single-device setup (CUDA if available, otherwise CPU).
-- **HPC Mode (DDP)**: If on the cluster, initialize `torch.nn.parallel.DistributedDataParallel` (DDP). 
-    - Parse the `$PBS_NODEFILE` to dynamically set `WORLD_SIZE` and `MASTER_ADDR` (using the first node in the list).
-    - Assign `LOCAL_RANK` and `RANK` by mapping the process to its index in the `PBS_NODEFILE`.
-    - Use the `nccl` backend for GPU-to-GPU communication and `gloo` as a fallback.
+- **Logging**
+  - Use W&B or TensorBoard (pick one, be consistent).
+  - Log train/val losses, gradient/parameter norms (periodically), and full hyperparameter config snapshot.
 
+- **Checkpoints**
+    - Save checkpoints in `experiments/{experiment_name}/...`
 
+- **Validation visuals**
+  - Every 10 epochs, log 3-panel figure (axial/sagittal slice):
+    - Masked ground-truth potentials
+    - Masked predictions
+    - Log-absolute error
+  - Implement plotting in `src/utils/visualization.py`.
 
-### B. High-Performance I/O & Mixed Precision
-- **Memory Optimization**: Use `torch.cuda.amp.autocast` (Mixed Precision) to reduce VRAM footprint. This is essential for fitting the $192 \times 96 \times 96$ volumes into memory on shared cluster GPUs.
-- **Efficient Loading**:
-    - **Local**: Use standard DataLoaders with `num_workers=4`.
-    - **HPC**: Use `DistributedSampler` to ensure unique data batches per GPU. Scale `num_workers` to match the cluster's CPU-per-node allocation. Use `pin_memory=True`.
-- **Checkpoint Resilience**: Automatically save and resume from `latest_checkpoint.pt`. This is mandatory to handle PBSPro wall-time limits; the model must be able to resume training seamlessly if the job is re-submitted.
-When running on HPC, implement a flag to allow loading data from a local scratch directory (e.g., /scratch/ or $TMPDIR) to minimize network latency during training.
+- **Zero-shot super-resolution eval (`scripts/eval_resolution.py`)**
+  - Load model trained at \(48 \times 48 \times 96\).
+  - Infer at higher resolution (e.g., \(96 \times 96 \times 192\)) over same \([-1, 1]^3\) domain.
+  - Log predictions, error maps, and quantitative metrics (MSE, relative error) on the high-res grid.
 
-## 10. Master-Process Responsibilities (Rank 0)
+## 7. Project Structure & Standards
+```text
+/
+├── configs
+│   └── config.yaml          # hyperparams (lr, batch_size, FNO_modes, loss weights, etc)
+├── data/
+├── experiments/
+├── scripts
+│   ├── main.py              # trainer entry point (config-driven)
+│   └── eval_resolution.py   # zero-shot super-resolution evaluation
+├── src/
+│   ├── models/              # geometry.py, unet.py, fno.py, wrapper.py
+│   ├── data/                # loader.py, transforms.py
+│   └── utils/               # masking.py, metrics.py, visualization.py
+└── tests/                   # unit tests for FNO spectral convolutions and key utilities
+```
 
-To prevent file corruption and redundant logging in a multi-GPU environment, the following must only be executed by the process with `RANK == 0`:
-- **Experiment Tracking**: Initialization of Weights & Biases or Tensorboard.
-- **Visualizations**: Generation and saving of 2D Axial/Sagittal slices and error maps.
-- **Model Checkpointing**: Writing weights to the `checkpoints/` directory.
+## 8. Implementation Constraints and Best Practices
+- Memory efficiency: use `torch.fft.rfftn` for 3D FNO to exploit real-valued symmetries.
+- Device agnostic:
+  - Auto-select device: prefer cuda, else cpu (support mps if available).
+  - Move tensors/models consistently.
+- Reproducibility: set seeds for torch, numpy, random via config.
+- Config-driven design:
+  - Avoid hard-coded hyperparameters.
+  - Control model choice, sizes, training schedule, loss weights, masks behavior via config/CLI.
 
-## 11. Project Integration & Launch Scripts
+## 9. What to prioritise
+1. Data pipeline (loader.py, coords/spacing generation, FEM target loading).
+2. Baseline UNet pipeline (GeometryEncoder, masking, losses, logging).
+3. FNO backbone (rFFT-based, memory-efficient).
+4. Zero-shot resolution evaluation script (eval_resolution.py).
+5. Visualization, metrics, and unit tests.
+6. Clarity, modularity, correctness; easy to plug new operator learners.
+7. Run with example data to smoke-test workflow.
 
-### A. Modular Backbone Wrapper
-- The `HybridWrapper` in `src/models/hybrid.py` must handle the 5-channel input (Source, Conductivity, X, Y, Z) and sum/multiply the components regardless of the underlying backbone (FNO or UNet).
-- Ensure that the analytical grid generation happens on the correct device (matching the neural network's device).
-
-### B. PBSPro Submission Template
-Include a `scripts/submit_job.pbs` file that:
-1. Allocates resources (nodes, GPUs, memory).
-2. Sets up the Python environment and CUDA paths.
-3. Calculates `MASTER_ADDR` and `WORLD_SIZE` from the PBS environment.
-4. Uses `torchrun` to launch the distributed training across all nodes.
+## 10. Definition of Done
+- Config-driven training and eval scripts run end-to-end on sample data.
+- For **both** backbones (`unet` and `fno`), iteratively run a **10-epoch smoke test** on the example data (train + val + logging). After each run, fix any failures/bugs and rerun until it completes end-to-end with **no runtime errors**.
+- Models support base training and higher-res inference without code changes.
+- Masked loss and gradient loss implemented and used in training.
+- Logging produces losses, norms, configs, and periodic visuals.
+- Tests cover FNO spectral ops and key utilities.
