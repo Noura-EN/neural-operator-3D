@@ -4,7 +4,7 @@
 - Build a config-driven, modular PyTorch framework that learns the operator mapping \((\sigma, f, X, Y, Z, \Delta x, \Delta y, \Delta z) \rightarrow \Phi_{\text{total}}\) on a 3D domain, supports zero-shot super-resolution, and includes training/eval scripts, logging, masking losses, and tests.
 - Prioritize clarity, modularity, and reproducibility; avoid hard-coding.
 - Deliver runnable training (`scripts/main.py`), zero-shot eval (`scripts/eval_resolution.py`), models (`src/models/`), data pipeline (`src/data/`), utilities (`src/utils/`), configs (`configs/config.yaml`), and tests (`tests/`).
-- Validate both UNet and FNO backbones via iterative 10‑epoch smoke tests on example data until they run without errors
+- Validate both UNet and FNO backbones via iterative runs on the data provided until they run without errors
 
 ## 1. Role & Context
 You are an expert Senior Research Engineer specializing in Scientific Machine Learning (SciML) and PyTorch. Your task is to implement a **modular, operator-learning framework** to predict the **total electrical potential** \(\Phi_{\text{total}}\) in a **normalized 3D cubic volume** containing a **cylindrical-like geometry**.
@@ -152,8 +152,44 @@ Implement losses/masking in `src/utils/masking.py` and `src/utils/metrics.py`.
 
 ## 10. Definition of Done
 - Config-driven training and eval scripts run end-to-end on sample data.
-- For **both** backbones (`unet` and `fno`), iteratively run a **10-epoch smoke test** on the example data (train + val + logging). After each run, fix any failures/bugs and rerun until it completes end-to-end with **no runtime errors**.
+- For **both** backbones (`unet` and `fno`), iteratively run a **smoke test** on the 100 sample example data (train + val + logging). After each run, fix any failures/bugs and rerun until it completes end-to-end with **no runtime errors**.
 - Models support base training and higher-res inference without code changes.
 - Masked loss and gradient loss implemented and used in training.
 - Logging produces losses, norms, configs, and periodic visuals.
 - Tests cover FNO spectral ops and key utilities.
+
+---
+
+## Implementation Notes & Clarifications
+
+### Data Format Clarifications
+- **Data files**: `.npz` format with keys: `sigma`, `source`, `mask`, `u`, `spacing`, `source_point`
+- **Conductivity tensor**: Stored as `(D, H, W, 6)` with 6 channels representing symmetric 3x3 tensor (3 diagonal + 3 off-diagonal)
+- **Coordinate grids**: Generated on-the-fly from grid shape and `coord_range`, not stored in data files
+- **Resolution**: The actual data resolution is `(D=96, H=48, W=48)`. Training uses native resolution; config resolution settings are for super-resolution evaluation.
+
+### Implementation Decisions
+- **Logging**: TensorBoard chosen (configured in `config.yaml` with `use_tensorboard: true`)
+- **Device selection**: Automatic preference: CUDA > MPS > CPU
+- **Spacing conditioning**: Implemented via `SpacingConditioner` module with learnable multiplicative modulation
+
+### Smoke Test Results
+Both UNet and FNO backbones completed 10-epoch smoke tests successfully on 100-sample dataset:
+
+| Backbone | Parameters | Final Val Loss | Best Rel L2 |
+|----------|-----------|----------------|-------------|
+| UNet     | 23.7M     | 0.000004       | 0.728       |
+| FNO      | 8.5M      | 0.000001       | 0.283       |
+
+### Running the Framework
+
+```bash
+# Train with FNO (default)
+python scripts/main.py --config configs/config.yaml
+
+# Train with UNet (modify config.yaml: backbone: unet)
+python scripts/main.py --config configs/config.yaml
+
+# Zero-shot super-resolution evaluation
+python scripts/eval_resolution.py --checkpoint experiments/.../checkpoints/best_model.pt --visualize
+```

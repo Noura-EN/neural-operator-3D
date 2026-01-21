@@ -16,8 +16,8 @@ experiments/
 *.pt
 *.pth
 
-# Data
-data/
+# Data (only top-level data directory, not src/data/)
+/data/
 *.h5
 *.npy
 *.npz

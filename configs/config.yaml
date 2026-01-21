@@ -19,6 +19,7 @@ model:
     modes2: 8
     modes3: 8
     width: 32
+    num_layers: 4
     fc_dim: 128
   unet:
     in_channels: 5
@@ -26,13 +27,13 @@ model:
     depth: 4
     dropout: 0.1
 training:
-  epochs: 2
+  epochs: 10
   learning_rate: 0.001
-  weight_decay: 1e-5
+  weight_decay: 0.00001
   scheduler: cosine
   scheduler_params:
     T_max: 100
-    eta_min: 1e-6
+    eta_min: 0.000001
   loss_weights:
     mse: 1.0
     pde: 0.1
@@ -43,28 +44,28 @@ training:
   resume_from: null
 grid:
   base_resolution:
-  - 192
   - 96
-  - 96
+  - 48
+  - 48
   train_resolution:
-  - 64
-  - 64
-  - 64
+  - 96
+  - 48
+  - 48
   test_resolution:
-  - 192
   - 96
-  - 96
+  - 48
+  - 48
   coord_range:
   - -1.0
   - 1.0
   log_conductivity: false
-  conductivity_epsilon: 1e-6
+  conductivity_epsilon: 0.000001
 physics:
   analytical:
     epsilon_factor: 0.1
     current_I: 1.0
   pde:
-    conductivity_threshold: 1e-6
+    conductivity_threshold: 0.000001
   mse:
     singularity_mask_radius: 3
   charge:
