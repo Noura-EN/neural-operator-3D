@@ -27,7 +27,7 @@ model:
     depth: 4
     dropout: 0.1
 training:
-  epochs: 10
+  epochs: 100
   learning_rate: 0.001
   weight_decay: 0.00001
   scheduler: cosine
@@ -36,12 +36,26 @@ training:
     eta_min: 0.000001
   loss_weights:
     mse: 1.0
-    pde: 0.1
+    pde: 0.5  # Gradient consistency weight (best found: 0.5)
     charge: 0.01
   use_amp: false
   checkpoint_dir: checkpoints
-  checkpoint_freq: 1
+  checkpoint_freq: 10
   resume_from: null
+  early_stopping_patience: 10
+  early_stopping_delta: 0.000001
+
+# Loss function configuration
+loss:
+  type: mse  # Options: mse, normalized, logcosh
+  pde_weight: 0.0  # True PDE residual loss weight (-∇·(σ∇Φ) - f)
+  spectral_weight: 0.0  # Spectral smoothing regularizer weight
+  spectral_mode: threshold  # Options: threshold, weighted
+
+# Experiment-specific settings
+experiment:
+  use_muscle_mask: false  # Best found: false (major gain)
+  use_singularity_mask: true  # Whether to exclude singularity region from loss
 grid:
   base_resolution:
   - 96
@@ -76,7 +90,7 @@ logging:
   log_dir: logs
   project_name: neural-operator-3d
   experiment_name: hybrid_potential_prediction
-  vis_freq: 1
+  vis_freq: 10
   vis_slices:
   - axial
   - sagittal
