@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional, Union
 
-from .geometry import CombinedEncoder, GeometryEncoder, SpacingConditioner
+from .geometry import CombinedEncoder
 from .unet import UNetBackbone
 from .fno import FNOBackbone
 
@@ -14,6 +14,7 @@ class PotentialFieldModel(nn.Module):
 
     Combines:
     1. CombinedEncoder: Processes conductivity, source, and coordinates
+       with additive spacing conditioning
     2. Backbone: Either UNet or FNO for predicting the potential field
     """
 
@@ -26,7 +27,6 @@ class PotentialFieldModel(nn.Module):
         out_channels: int = 1,
         geometry_hidden_dim: int = 64,
         geometry_num_layers: int = 2,
-        use_spacing_conditioning: bool = True,
         unet_config: Optional[Dict] = None,
         fno_config: Optional[Dict] = None,
     ):
@@ -40,7 +40,6 @@ class PotentialFieldModel(nn.Module):
             out_channels: Number of output channels (1 for potential)
             geometry_hidden_dim: Hidden dimension for geometry encoder
             geometry_num_layers: Number of layers in geometry encoder
-            use_spacing_conditioning: Whether to condition on voxel spacing
             unet_config: Configuration dict for UNet backbone
             fno_config: Configuration dict for FNO backbone
         """
@@ -48,7 +47,7 @@ class PotentialFieldModel(nn.Module):
 
         self.backbone_type = backbone_type.lower()
 
-        # Combined encoder
+        # Combined encoder with additive spacing conditioning
         encoder_out_channels = geometry_hidden_dim
         self.encoder = CombinedEncoder(
             sigma_channels=sigma_channels,
@@ -57,7 +56,6 @@ class PotentialFieldModel(nn.Module):
             geometry_hidden_dim=geometry_hidden_dim,
             geometry_num_layers=geometry_num_layers,
             out_channels=encoder_out_channels,
-            use_spacing_conditioning=use_spacing_conditioning,
         )
 
         # Initialize backbone based on type
@@ -131,7 +129,6 @@ def build_model(config: Dict) -> PotentialFieldModel:
     geom_config = model_config.get("geometry_encoder", {})
     geometry_hidden_dim = geom_config.get("hidden_dim", 64)
     geometry_num_layers = geom_config.get("num_layers", 2)
-    use_geometry_encoder = geom_config.get("enabled", True)
 
     # Backbone configs
     unet_config = model_config.get("unet", {})
@@ -145,7 +142,6 @@ def build_model(config: Dict) -> PotentialFieldModel:
         out_channels=1,
         geometry_hidden_dim=geometry_hidden_dim,
         geometry_num_layers=geometry_num_layers,
-        use_spacing_conditioning=True,
         unet_config=unet_config,
         fno_config=fno_config,
     )

@@ -76,69 +76,6 @@ def get_slice_indices(
     return indices
 
 
-def create_2d_heatmap(
-    data: np.ndarray,
-    slice_type: str,
-    slice_idx: int,
-    mask: Optional[np.ndarray] = None,
-    title: str = "",
-    cmap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    ax: Optional[plt.Axes] = None,
-) -> plt.Axes:
-    """Create a 2D heatmap for a single slice.
-
-    Args:
-        data: 3D volume (D, H, W)
-        slice_type: "axial", "coronal", or "sagittal"
-        slice_idx: Index of slice
-        mask: Optional mask to apply
-        title: Plot title
-        cmap: Colormap
-        vmin, vmax: Color scale limits
-        ax: Optional axes to plot on
-
-    Returns:
-        Matplotlib axes
-    """
-    data = np.squeeze(data)
-    if mask is not None:
-        mask = np.squeeze(mask)
-
-    # Extract slice
-    if slice_type == "axial":
-        slice_data = data[slice_idx, :, :]
-        mask_slice = mask[slice_idx, :, :] if mask is not None else None
-        xlabel, ylabel = "X", "Y"
-    elif slice_type == "coronal":
-        slice_data = data[:, slice_idx, :]
-        mask_slice = mask[:, slice_idx, :] if mask is not None else None
-        xlabel, ylabel = "X", "Z"
-    elif slice_type == "sagittal":
-        slice_data = data[:, :, slice_idx]
-        mask_slice = mask[:, :, slice_idx] if mask is not None else None
-        xlabel, ylabel = "Y", "Z"
-    else:
-        raise ValueError(f"Unknown slice type: {slice_type}")
-
-    # Apply mask
-    if mask_slice is not None:
-        slice_data = np.where(mask_slice > 0.5, slice_data, np.nan)
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    im = ax.imshow(slice_data.T, cmap=cmap, vmin=vmin, vmax=vmax,
-                   origin='lower', aspect='auto')
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    plt.colorbar(im, ax=ax, label="Potential")
-
-    return ax
-
-
 def create_3d_surface(
     data: np.ndarray,
     slice_type: str,
@@ -409,81 +346,6 @@ def plot_loss_curves(
     return fig
 
 
-def create_slice_comparison(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    mask: Optional[torch.Tensor] = None,
-    slice_type: str = "axial",
-    slice_idx: Optional[int] = None,
-    title_prefix: str = "",
-    cmap: str = "viridis",
-    error_cmap: str = "hot",
-) -> plt.Figure:
-    """Create a 3-panel comparison figure for a single slice (legacy function).
-
-    Kept for backward compatibility.
-    """
-    pred = np.squeeze(_to_numpy(pred))
-    target = np.squeeze(_to_numpy(target))
-    if mask is not None:
-        mask = np.squeeze(_to_numpy(mask))
-
-    D, H, W = pred.shape
-
-    if slice_type == "axial":
-        idx = slice_idx if slice_idx is not None else D // 2
-        pred_slice = pred[idx, :, :]
-        target_slice = target[idx, :, :]
-        mask_slice = mask[idx, :, :] if mask is not None else None
-        axis_label = f"Axial (z={idx})"
-    elif slice_type == "sagittal":
-        idx = slice_idx if slice_idx is not None else W // 2
-        pred_slice = pred[:, :, idx]
-        target_slice = target[:, :, idx]
-        mask_slice = mask[:, :, idx] if mask is not None else None
-        axis_label = f"Sagittal (x={idx})"
-    elif slice_type == "coronal":
-        idx = slice_idx if slice_idx is not None else H // 2
-        pred_slice = pred[:, idx, :]
-        target_slice = target[:, idx, :]
-        mask_slice = mask[:, idx, :] if mask is not None else None
-        axis_label = f"Coronal (y={idx})"
-    else:
-        raise ValueError(f"Unknown slice type: {slice_type}")
-
-    if mask_slice is not None:
-        pred_masked = np.where(mask_slice > 0.5, pred_slice, np.nan)
-        target_masked = np.where(mask_slice > 0.5, target_slice, np.nan)
-    else:
-        pred_masked = pred_slice
-        target_masked = target_slice
-
-    error = np.abs(pred_slice - target_slice)
-    log_error = np.log10(error + 1e-10)
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-    vmin = np.nanmin([np.nanmin(target_masked), np.nanmin(pred_masked)])
-    vmax = np.nanmax([np.nanmax(target_masked), np.nanmax(pred_masked)])
-
-    im1 = axes[0].imshow(target_masked.T, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
-    axes[0].set_title("Ground Truth (FEM)")
-    plt.colorbar(im1, ax=axes[0], label="Potential")
-
-    im2 = axes[1].imshow(pred_masked.T, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
-    axes[1].set_title("Prediction")
-    plt.colorbar(im2, ax=axes[1], label="Potential")
-
-    im3 = axes[2].imshow(log_error.T, cmap=error_cmap, origin='lower')
-    axes[2].set_title("Log₁₀(|Error|)")
-    plt.colorbar(im3, ax=axes[2], label="Log₁₀(|Pred - Target|)")
-
-    fig.suptitle(f"{title_prefix} {axis_label}", fontsize=14)
-    plt.tight_layout()
-
-    return fig
-
-
 def save_validation_figure(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -504,35 +366,16 @@ def save_validation_figure(
         epoch: Current epoch number
         save_dir: Directory to save figures
         sample_idx: Sample index
-        comprehensive: Whether to create comprehensive visualizations
+        comprehensive: Whether to create comprehensive visualizations (always True)
 
     Returns:
         Dictionary of saved file paths
     """
     os.makedirs(save_dir, exist_ok=True)
 
-    if comprehensive:
-        return create_comprehensive_visualization(
-            pred, target, source, mask,
-            title_prefix=f"Epoch {epoch}",
-            save_dir=save_dir,
-            sample_idx=sample_idx,
-        )
-    else:
-        # Legacy simple visualization
-        fig = create_slice_comparison(pred, target, mask, title_prefix=f"Epoch {epoch}")
-        path = os.path.join(save_dir, f"validation_epoch_{epoch:04d}.png")
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        return {'simple': path}
-
-
-def create_multi_slice_figure(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    mask: Optional[torch.Tensor] = None,
-    slice_types: List[str] = ["axial", "sagittal"],
-    title_prefix: str = "",
-) -> plt.Figure:
-    """Create a multi-row figure with different slice types (legacy function)."""
-    return create_slice_comparison(pred, target, mask, slice_types[0], title_prefix=title_prefix)
+    return create_comprehensive_visualization(
+        pred, target, source, mask,
+        title_prefix=f"Epoch {epoch}",
+        save_dir=save_dir,
+        sample_idx=sample_idx,
+    )

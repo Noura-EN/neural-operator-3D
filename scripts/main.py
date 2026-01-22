@@ -116,6 +116,11 @@ def train_epoch(
         if source_point is not None:
             source_point = source_point.to(device)
 
+        # Handle spacing channels if present
+        if 'spacing_channels' in batch:
+            spacing_channels = batch['spacing_channels'].to(device)
+            coords = torch.cat([coords, spacing_channels], dim=1)
+
         optimizer.zero_grad()
         pred = model(sigma, source, coords, spacing)
 
@@ -184,6 +189,11 @@ def validate(
             source_point = batch.get('source_point', None)
             if source_point is not None:
                 source_point = source_point.to(device)
+
+            # Handle spacing channels if present
+            if 'spacing_channels' in batch:
+                spacing_channels = batch['spacing_channels'].to(device)
+                coords = torch.cat([coords, spacing_channels], dim=1)
 
             pred = model(sigma, source, coords, spacing)
 
@@ -260,6 +270,11 @@ def evaluate_on_split(
             coords = batch['coords'].to(device)
             spacing = batch['spacing'].to(device)
             target = batch['target'].to(device)
+
+            # Handle spacing channels if present
+            if 'spacing_channels' in batch:
+                spacing_channels = batch['spacing_channels'].to(device)
+                coords = torch.cat([coords, spacing_channels], dim=1)
 
             pred = model(sigma, source, coords, spacing)
 
@@ -360,31 +375,26 @@ def main():
     mse_config = physics_config.get('mse', {})
     loss_config = config.get('loss', {})
 
-    # Check if muscle mask should be used
-    use_muscle_mask = config.get('experiment', {}).get('use_muscle_mask', True)
     use_singularity_mask = config.get('experiment', {}).get('use_singularity_mask', True)
 
     criterion = CombinedLoss(
         mse_weight=loss_weights.get('mse', 1.0),
-        grad_weight=loss_weights.get('pde', 0.1),
+        grad_weight=loss_weights.get('pde', 0.5),  # Best found: 0.5
         singularity_radius=mse_config.get('singularity_mask_radius', 3),
-        use_muscle_mask=use_muscle_mask,
-        # New options
-        loss_type=loss_config.get('type', 'mse'),  # "mse", "normalized", "logcosh", "mse_logcosh"
-        pde_weight=loss_config.get('pde_weight', 0.0),  # True PDE residual weight
+        loss_type=loss_config.get('type', 'mse'),
+        pde_weight=loss_config.get('pde_weight', 0.0),
         spectral_weight=loss_config.get('spectral_weight', 0.0),
         spectral_mode=loss_config.get('spectral_mode', 'threshold'),
         use_singularity_mask=use_singularity_mask,
-        logcosh_weight=loss_config.get('logcosh_weight', 0.0),  # For hybrid MSE + log-cosh
-        tv_weight=loss_config.get('tv_weight', 0.0),  # Total variation regularizer
+        logcosh_weight=loss_config.get('logcosh_weight', 0.0),
+        tv_weight=loss_config.get('tv_weight', 0.01),  # Default on for noise reduction
     )
 
     # Log loss configuration
     print(f"Loss config: type={loss_config.get('type', 'mse')}, "
           f"logcosh_weight={loss_config.get('logcosh_weight', 0.0)}, "
-          f"tv_weight={loss_config.get('tv_weight', 0.0)}, "
-          f"use_singularity_mask={use_singularity_mask}, "
-          f"use_muscle_mask={use_muscle_mask}")
+          f"tv_weight={loss_config.get('tv_weight', 0.01)}, "
+          f"use_singularity_mask={use_singularity_mask}")
 
     # Setup TensorBoard writer
     log_dir = os.path.join(exp_dir, "logs")

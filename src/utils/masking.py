@@ -119,28 +119,26 @@ def create_combined_mask(
 
 
 class WeightedMaskedMSELoss(nn.Module):
-    """Weighted MSE loss applied only to masked regions."""
+    """Weighted MSE loss with singularity exclusion.
+
+    Excludes the singularity region around the source to avoid fitting
+    the numerical artifacts near the point source.
+    """
 
     def __init__(
         self,
         weight: float = 1.0,
         singularity_radius: int = 3,
-        use_muscle_mask: bool = True,
-        muscle_sigma_values: Tuple[float, float, float] = (0.2455, 0.2455, 1.2275),
     ):
         """Initialize loss.
 
         Args:
             weight: Loss weight multiplier
             singularity_radius: Radius around source to exclude
-            use_muscle_mask: Whether to restrict loss to muscle regions
-            muscle_sigma_values: Diagonal conductivity values for muscle
         """
         super().__init__()
         self.weight = weight
         self.singularity_radius = singularity_radius
-        self.use_muscle_mask = use_muscle_mask
-        self.muscle_sigma_values = muscle_sigma_values
 
     def forward(
         self,
@@ -162,24 +160,17 @@ class WeightedMaskedMSELoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        if self.use_muscle_mask:
-            mask = create_combined_mask(
-                sigma, source, self.singularity_radius,
-                self.muscle_sigma_values, source_point
-            )
-        else:
-            # Just exclude singularity
-            singularity_mask = create_singularity_mask(
-                source, self.singularity_radius, source_point
-            )
-            mask = 1 - singularity_mask
+        # Exclude singularity region
+        singularity_mask = create_singularity_mask(
+            source, self.singularity_radius, source_point
+        )
+        mask = 1 - singularity_mask
 
         # Apply mask
         masked_pred = pred * mask
         masked_target = target * mask
 
         # Compute MSE over masked region
-        # Normalize by number of masked voxels to avoid scale issues
         num_masked = mask.sum() + 1e-8
         loss = ((masked_pred - masked_target) ** 2).sum() / num_masked
 
@@ -258,6 +249,7 @@ class NormalizedMSELoss(nn.Module):
     Loss = mean((pred - target)² / (target² + eps))
 
     This loss gives equal weight to relative errors regardless of target magnitude.
+    Note: This loss type was found to cause scale collapse in ablation studies.
     """
 
     def __init__(
@@ -265,7 +257,6 @@ class NormalizedMSELoss(nn.Module):
         weight: float = 1.0,
         eps: float = 1e-6,
         singularity_radius: int = 3,
-        use_muscle_mask: bool = False,
     ):
         """Initialize normalized MSE loss.
 
@@ -273,13 +264,11 @@ class NormalizedMSELoss(nn.Module):
             weight: Loss weight multiplier
             eps: Small value to avoid division by zero
             singularity_radius: Radius around source to exclude
-            use_muscle_mask: Whether to restrict to muscle regions
         """
         super().__init__()
         self.weight = weight
         self.eps = eps
         self.singularity_radius = singularity_radius
-        self.use_muscle_mask = use_muscle_mask
 
     def forward(
         self,
@@ -301,16 +290,11 @@ class NormalizedMSELoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        # Create mask
-        if self.use_muscle_mask:
-            mask = create_combined_mask(
-                sigma, source, self.singularity_radius, source_point=source_point
-            )
-        else:
-            singularity_mask = create_singularity_mask(
-                source, self.singularity_radius, source_point
-            )
-            mask = 1 - singularity_mask
+        # Exclude singularity region
+        singularity_mask = create_singularity_mask(
+            source, self.singularity_radius, source_point
+        )
+        mask = 1 - singularity_mask
 
         # Compute pointwise normalized error
         squared_error = (pred - target) ** 2
@@ -338,12 +322,10 @@ class LogCoshLoss(nn.Module):
         self,
         weight: float = 1.0,
         singularity_radius: int = 3,
-        use_muscle_mask: bool = False,
     ):
         super().__init__()
         self.weight = weight
         self.singularity_radius = singularity_radius
-        self.use_muscle_mask = use_muscle_mask
 
     def forward(
         self,
@@ -353,16 +335,11 @@ class LogCoshLoss(nn.Module):
         source: torch.Tensor,
         source_point: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Create mask
-        if self.use_muscle_mask:
-            mask = create_combined_mask(
-                sigma, source, self.singularity_radius, source_point=source_point
-            )
-        else:
-            singularity_mask = create_singularity_mask(
-                source, self.singularity_radius, source_point
-            )
-            mask = 1 - singularity_mask
+        # Exclude singularity region
+        singularity_mask = create_singularity_mask(
+            source, self.singularity_radius, source_point
+        )
+        mask = 1 - singularity_mask
 
         diff = pred - target
         # log(cosh(x)) = x + softplus(-2x) - log(2)
@@ -602,63 +579,61 @@ class TotalVariationLoss(nn.Module):
 
 
 class CombinedLoss(nn.Module):
-    """Combined loss function for potential field prediction."""
+    """Combined loss function for potential field prediction.
+
+    Default configuration uses MSE loss with TV regularization and singularity
+    exclusion, which was found to be optimal in ablation studies.
+    """
 
     def __init__(
         self,
         mse_weight: float = 1.0,
-        grad_weight: float = 0.1,
+        grad_weight: float = 0.5,
         singularity_radius: int = 3,
-        use_muscle_mask: bool = True,
-        # New options
-        loss_type: str = "mse",  # "mse", "normalized", "logcosh", "mse_logcosh"
+        loss_type: str = "mse",  # "mse", "normalized", "logcosh"
         pde_weight: float = 0.0,  # True PDE residual weight
         spectral_weight: float = 0.0,  # Spectral smoothing weight
         spectral_mode: str = "threshold",  # "threshold" or "weighted"
         use_singularity_mask: bool = True,  # Whether to exclude singularity
         logcosh_weight: float = 0.0,  # For hybrid MSE + log-cosh
-        tv_weight: float = 0.0,  # Total variation regularizer
+        tv_weight: float = 0.01,  # Total variation regularizer (default on)
     ):
         """Initialize combined loss.
 
         Args:
             mse_weight: Weight for MSE loss
-            grad_weight: Weight for gradient consistency loss
+            grad_weight: Weight for gradient consistency loss (default 0.5)
             singularity_radius: Radius around source to exclude
-            use_muscle_mask: Whether to use muscle masking
-            loss_type: Type of primary loss ("mse", "normalized", "logcosh", "mse_logcosh")
+            loss_type: Type of primary loss ("mse", "normalized", "logcosh")
             pde_weight: Weight for true PDE residual loss
             spectral_weight: Weight for spectral smoothing regularizer
             spectral_mode: Spectral smoothing mode ("threshold" or "weighted")
             use_singularity_mask: Whether to exclude singularity region
             logcosh_weight: Weight for log-cosh term in hybrid loss
-            tv_weight: Weight for total variation regularizer
+            tv_weight: Weight for total variation regularizer (default 0.01)
         """
         super().__init__()
 
         self.loss_type = loss_type
         self.singularity_radius = singularity_radius
-        self.use_muscle_mask = use_muscle_mask
         self.use_singularity_mask = use_singularity_mask
 
         # Primary loss
-        if loss_type == "mse" or loss_type == "mse_logcosh":
+        effective_radius = singularity_radius if use_singularity_mask else 0
+        if loss_type == "mse":
             self.primary_loss = WeightedMaskedMSELoss(
                 weight=mse_weight,
-                singularity_radius=singularity_radius if use_singularity_mask else 0,
-                use_muscle_mask=use_muscle_mask,
+                singularity_radius=effective_radius,
             )
         elif loss_type == "normalized":
             self.primary_loss = NormalizedMSELoss(
                 weight=mse_weight,
-                singularity_radius=singularity_radius if use_singularity_mask else 0,
-                use_muscle_mask=use_muscle_mask,
+                singularity_radius=effective_radius,
             )
         elif loss_type == "logcosh":
             self.primary_loss = LogCoshLoss(
                 weight=mse_weight,
-                singularity_radius=singularity_radius if use_singularity_mask else 0,
-                use_muscle_mask=use_muscle_mask,
+                singularity_radius=effective_radius,
             )
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
@@ -666,11 +641,10 @@ class CombinedLoss(nn.Module):
         # Log-cosh component for hybrid loss
         self.logcosh_loss = None
         self.logcosh_weight = logcosh_weight
-        if loss_type == "mse_logcosh" or logcosh_weight > 0:
+        if logcosh_weight > 0:
             self.logcosh_loss = LogCoshLoss(
-                weight=logcosh_weight if logcosh_weight > 0 else 0.1,
-                singularity_radius=singularity_radius if use_singularity_mask else 0,
-                use_muscle_mask=use_muscle_mask,
+                weight=logcosh_weight,
+                singularity_radius=effective_radius,
             )
 
         # Gradient consistency loss
@@ -695,7 +669,7 @@ class CombinedLoss(nn.Module):
                 mode=spectral_mode,
             )
 
-        # Total variation regularizer
+        # Total variation regularizer (default on for noise reduction)
         self.tv_loss = None
         self.tv_weight = tv_weight
         if tv_weight > 0:
@@ -729,9 +703,10 @@ class CombinedLoss(nn.Module):
         # Compute primary loss (MSE, normalized, or log-cosh)
         primary = self.primary_loss(pred, target, sigma, source, source_point)
 
-        # Create mask for gradient loss
+        # Create mask for gradient loss (singularity exclusion only)
         if self.use_singularity_mask:
-            mask = create_combined_mask(sigma, source, self.singularity_radius)
+            singularity_mask = create_singularity_mask(source, self.singularity_radius, source_point)
+            mask = 1 - singularity_mask
         else:
             mask = None
 

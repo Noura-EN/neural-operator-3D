@@ -29,12 +29,9 @@ from .metrics import (
     parameter_norm,
 )
 from .visualization import (
-    create_slice_comparison,
-    create_multi_slice_figure,
     save_validation_figure,
     plot_loss_curves,
     create_comprehensive_visualization,
-    create_2d_heatmap,
     create_3d_surface,
 )
 from .training import (
@@ -55,6 +52,7 @@ __all__ = [
     "LogCoshLoss",
     "PDEResidualLoss",
     "SpectralSmoothingLoss",
+    "TotalVariationLoss",
     "mse",
     "rmse",
     "mae",
@@ -68,12 +66,9 @@ __all__ = [
     "compute_diagnostic_metrics",
     "gradient_norm",
     "parameter_norm",
-    "create_slice_comparison",
-    "create_multi_slice_figure",
     "save_validation_figure",
     "plot_loss_curves",
     "create_comprehensive_visualization",
-    "create_2d_heatmap",
     "create_3d_surface",
     "EarlyStopping",
     "ExperimentTracker",

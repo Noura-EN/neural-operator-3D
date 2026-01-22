@@ -151,6 +151,70 @@ def main():
         "fno_modes_2": {
             "model": {"fno": {"modes1": 2, "modes2": 2, "modes3": 2}}
         },
+
+        # Spacing encoding ablations
+        "no_spacing_conditioning": {
+            "spacing": {"use_spacing_conditioning": False}
+        },
+        "physical_coords": {
+            "spacing": {"use_physical_coords": True}
+        },
+        "spacing_channels": {
+            "spacing": {"add_spacing_channels": True}
+        },
+        "physical_coords_no_cond": {
+            "spacing": {"use_physical_coords": True, "use_spacing_conditioning": False}
+        },
+
+        # Spacing conditioning mode ablations
+        "spacing_additive": {
+            "spacing": {"conditioning_mode": "additive"}
+        },
+        "spacing_film": {
+            "spacing": {"conditioning_mode": "film"}
+        },
+        "spacing_gate": {
+            "spacing": {"conditioning_mode": "gate"}
+        },
+
+        # ============================================
+        # 352-sample architectural ablations
+        # ============================================
+
+        # Fourier modes ablations (more modes with more data)
+        "modes_10": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10}}
+        },
+        "modes_12": {
+            "model": {"fno": {"modes1": 12, "modes2": 12, "modes3": 12}}
+        },
+
+        # Width ablations (wider models with more data)
+        "width_48": {
+            "model": {"fno": {"width": 48, "fc_dim": 192}}
+        },
+        "width_64": {
+            "model": {"fno": {"width": 64, "fc_dim": 256}}
+        },
+
+        # Depth ablations (deeper models with more data)
+        "layers_5": {
+            "model": {"fno": {"num_layers": 5}}
+        },
+        "layers_6": {
+            "model": {"fno": {"num_layers": 6}}
+        },
+
+        # Combination ablations (best settings)
+        "modes10_layers6": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10, "num_layers": 6}}
+        },
+        "width48_layers6": {
+            "model": {"fno": {"width": 48, "fc_dim": 192, "num_layers": 6}}
+        },
+        "modes10_width48": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10, "width": 48, "fc_dim": 192}}
+        },
     }
 
     if args.experiment == "all":

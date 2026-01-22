@@ -79,6 +79,9 @@ class SpacingConditioner(nn.Module):
 
     This module creates a spatial modulation based on the physical voxel spacing,
     which is critical for resolution-independent operator learning.
+
+    Uses additive conditioning: features + mlp(spacing)
+    This was found to be the best performing mode in ablation studies.
     """
 
     def __init__(
@@ -95,12 +98,14 @@ class SpacingConditioner(nn.Module):
             hidden_dim: Hidden dimension for the MLP
         """
         super().__init__()
+        self.feature_dim = feature_dim
 
+        # Additive conditioning: features + mlp(spacing)
         self.mlp = nn.Sequential(
             nn.Linear(spacing_dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, feature_dim),
-            nn.Sigmoid(),  # Output in [0, 1] for multiplicative conditioning
+            # No activation - can be positive or negative
         )
 
     def forward(
@@ -117,14 +122,9 @@ class SpacingConditioner(nn.Module):
         Returns:
             Conditioned features of shape (B, C, D, H, W)
         """
-        # Compute modulation weights
-        weights = self.mlp(spacing)  # (B, C)
-
-        # Reshape for broadcasting: (B, C) -> (B, C, 1, 1, 1)
-        weights = weights.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-        # Apply multiplicative conditioning
-        return features * weights
+        bias = self.mlp(spacing)  # (B, C)
+        bias = bias.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        return features + bias
 
 
 class CombinedEncoder(nn.Module):
@@ -133,7 +133,7 @@ class CombinedEncoder(nn.Module):
     This module:
     1. Encodes the conductivity tensor via GeometryEncoder
     2. Concatenates with source field, coordinates
-    3. Optionally applies spacing conditioning
+    3. Applies additive spacing conditioning (found to be optimal in ablations)
     """
 
     def __init__(
@@ -144,7 +144,6 @@ class CombinedEncoder(nn.Module):
         geometry_hidden_dim: int = 64,
         geometry_num_layers: int = 2,
         out_channels: int = 64,
-        use_spacing_conditioning: bool = True,
     ):
         """Initialize CombinedEncoder.
 
@@ -155,7 +154,6 @@ class CombinedEncoder(nn.Module):
             geometry_hidden_dim: Hidden dimension for geometry encoder
             geometry_num_layers: Number of layers in geometry encoder
             out_channels: Output channels
-            use_spacing_conditioning: Whether to use spacing conditioning
         """
         super().__init__()
 
@@ -175,12 +173,11 @@ class CombinedEncoder(nn.Module):
             nn.GELU(),
         )
 
-        self.use_spacing_conditioning = use_spacing_conditioning
-        if use_spacing_conditioning:
-            self.spacing_conditioner = SpacingConditioner(
-                spacing_dim=3,
-                feature_dim=out_channels,
-            )
+        # Additive spacing conditioning (best performing mode)
+        self.spacing_conditioner = SpacingConditioner(
+            spacing_dim=3,
+            feature_dim=out_channels,
+        )
 
         self.out_channels = out_channels
 
@@ -211,8 +208,7 @@ class CombinedEncoder(nn.Module):
         # Fuse features
         features = self.fusion(combined)
 
-        # Apply spacing conditioning if enabled
-        if self.use_spacing_conditioning:
-            features = self.spacing_conditioner(features, spacing)
+        # Apply additive spacing conditioning
+        features = self.spacing_conditioner(features, spacing)
 
         return features

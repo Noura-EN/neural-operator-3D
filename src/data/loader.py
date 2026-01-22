@@ -27,6 +27,8 @@ class PotentialFieldDataset(Dataset):
         sample_indices: Optional[List[int]] = None,
         coord_range: Tuple[float, float] = (-1.0, 1.0),
         device: str = "cpu",
+        use_physical_coords: bool = False,
+        add_spacing_channels: bool = False,
     ):
         """Initialize dataset.
 
@@ -35,10 +37,14 @@ class PotentialFieldDataset(Dataset):
             sample_indices: List of sample indices to use (for train/val/test splits)
             coord_range: Range for normalized coordinates (default: [-1, 1])
             device: Device to load tensors to
+            use_physical_coords: If True, scale coordinates by spacing
+            add_spacing_channels: If True, add spacing as explicit input channels
         """
         self.data_dir = Path(data_dir)
         self.coord_range = coord_range
         self.device = device
+        self.use_physical_coords = use_physical_coords
+        self.add_spacing_channels = add_spacing_channels
 
         # Find all sample files
         all_files = sorted(self.data_dir.glob("sample_*.npz"))
@@ -54,11 +60,18 @@ class PotentialFieldDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sample_files)
 
-    def _generate_coords(self, shape: Tuple[int, int, int]) -> torch.Tensor:
-        """Generate normalized coordinate grids.
+    def _generate_coords(
+        self,
+        shape: Tuple[int, int, int],
+        spacing: Optional[np.ndarray] = None,
+        use_physical_coords: bool = False,
+    ) -> torch.Tensor:
+        """Generate coordinate grids.
 
         Args:
             shape: Grid shape (D, H, W)
+            spacing: Physical voxel spacing (3,) - only used if use_physical_coords=True
+            use_physical_coords: If True, scale coords by spacing to get physical positions
 
         Returns:
             Coordinate tensor of shape (3, D, H, W) with X, Y, Z meshgrids
@@ -66,7 +79,7 @@ class PotentialFieldDataset(Dataset):
         D, H, W = shape
         low, high = self.coord_range
 
-        # Create 1D coordinate arrays
+        # Create 1D coordinate arrays (normalized to coord_range)
         z = torch.linspace(low, high, D)
         y = torch.linspace(low, high, H)
         x = torch.linspace(low, high, W)
@@ -74,8 +87,18 @@ class PotentialFieldDataset(Dataset):
         # Create meshgrid with 'ij' indexing
         Z, Y, X = torch.meshgrid(z, y, x, indexing='ij')
 
-        # Stack to (3, D, H, W)
+        # Stack to (3, D, H, W) - order is X, Y, Z
         coords = torch.stack([X, Y, Z], dim=0)
+
+        # If using physical coordinates, scale by spacing
+        if use_physical_coords and spacing is not None:
+            # spacing is (dx, dy, dz), coords are (X, Y, Z)
+            # Scale each coordinate by corresponding spacing
+            # This makes coordinates represent physical positions
+            spacing_tensor = torch.from_numpy(spacing).float()
+            # Reshape for broadcasting: (3,) -> (3, 1, 1, 1)
+            spacing_scale = spacing_tensor.view(3, 1, 1, 1)
+            coords = coords * spacing_scale
 
         return coords
 
@@ -111,11 +134,16 @@ class PotentialFieldDataset(Dataset):
         spacing = torch.from_numpy(spacing).float()  # (3,)
         source_point = torch.from_numpy(source_point).float()  # (3,)
 
-        # Generate normalized coordinates
+        # Generate coordinates (normalized or physical)
         grid_shape = sigma.shape[1:]  # (D, H, W)
-        coords = self._generate_coords(grid_shape)
+        spacing_np = data['spacing']  # Keep numpy version for coord generation
+        coords = self._generate_coords(
+            grid_shape,
+            spacing=spacing_np,
+            use_physical_coords=self.use_physical_coords,
+        )
 
-        return {
+        result = {
             'sigma': sigma,
             'source': source,
             'coords': coords,
@@ -124,6 +152,15 @@ class PotentialFieldDataset(Dataset):
             'target': target,
             'source_point': source_point,
         }
+
+        # Optionally add spacing as explicit channels
+        if self.add_spacing_channels:
+            # Broadcast spacing to (3, D, H, W)
+            D, H, W = grid_shape
+            spacing_channels = spacing.view(3, 1, 1, 1).expand(3, D, H, W)
+            result['spacing_channels'] = spacing_channels
+
+        return result
 
 
 def create_data_splits(
@@ -190,23 +227,34 @@ def get_dataloaders(
 
     coord_range = tuple(config['grid']['coord_range'])
 
+    # Spacing encoding options
+    spacing_config = config.get('spacing', {})
+    use_physical_coords = spacing_config.get('use_physical_coords', False)
+    add_spacing_channels = spacing_config.get('add_spacing_channels', False)
+
     # Create datasets
     train_dataset = PotentialFieldDataset(
         data_dir=data_config['data_dir'],
         sample_indices=train_indices,
         coord_range=coord_range,
+        use_physical_coords=use_physical_coords,
+        add_spacing_channels=add_spacing_channels,
     )
 
     val_dataset = PotentialFieldDataset(
         data_dir=data_config['data_dir'],
         sample_indices=val_indices,
         coord_range=coord_range,
+        use_physical_coords=use_physical_coords,
+        add_spacing_channels=add_spacing_channels,
     )
 
     test_dataset = PotentialFieldDataset(
         data_dir=data_config['data_dir'],
         sample_indices=test_indices,
         coord_range=coord_range,
+        use_physical_coords=use_physical_coords,
+        add_spacing_channels=add_spacing_channels,
     )
 
     # Create dataloaders
