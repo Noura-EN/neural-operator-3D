@@ -121,8 +121,13 @@ def train_epoch(
             spacing_channels = batch['spacing_channels'].to(device)
             coords = torch.cat([coords, spacing_channels], dim=1)
 
+        # Handle analytical solution if present
+        analytical = batch.get('analytical', None)
+        if analytical is not None:
+            analytical = analytical.to(device)
+
         optimizer.zero_grad()
-        pred = model(sigma, source, coords, spacing)
+        pred = model(sigma, source, coords, spacing, analytical=analytical)
 
         loss, loss_dict = criterion(pred, target, sigma, source, spacing, source_point)
 
@@ -195,7 +200,12 @@ def validate(
                 spacing_channels = batch['spacing_channels'].to(device)
                 coords = torch.cat([coords, spacing_channels], dim=1)
 
-            pred = model(sigma, source, coords, spacing)
+            # Handle analytical solution if present
+            analytical = batch.get('analytical', None)
+            if analytical is not None:
+                analytical = analytical.to(device)
+
+            pred = model(sigma, source, coords, spacing, analytical=analytical)
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing, source_point)
 
@@ -276,7 +286,12 @@ def evaluate_on_split(
                 spacing_channels = batch['spacing_channels'].to(device)
                 coords = torch.cat([coords, spacing_channels], dim=1)
 
-            pred = model(sigma, source, coords, spacing)
+            # Handle analytical solution if present
+            analytical = batch.get('analytical', None)
+            if analytical is not None:
+                analytical = analytical.to(device)
+
+            pred = model(sigma, source, coords, spacing, analytical=analytical)
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing)
 

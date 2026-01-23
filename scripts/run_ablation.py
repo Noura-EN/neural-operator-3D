@@ -215,6 +215,93 @@ def main():
         "modes10_width48": {
             "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10, "width": 48, "fc_dim": 192}}
         },
+
+        # Deeper models (exploring if depth continues to help)
+        "layers_7": {
+            "model": {"fno": {"num_layers": 7}}
+        },
+        "layers_8": {
+            "model": {"fno": {"num_layers": 8}}
+        },
+
+        # layers=6 variations (isolate TV contribution)
+        "layers6_no_tv": {
+            "model": {"fno": {"num_layers": 6}},
+            "loss": {"tv_weight": 0.0}
+        },
+        "layers6_tv_0.02": {
+            "model": {"fno": {"num_layers": 6}},
+            "loss": {"tv_weight": 0.02}
+        },
+        "layers6_tv_0.005": {
+            "model": {"fno": {"num_layers": 6}},
+            "loss": {"tv_weight": 0.005}
+        },
+
+        # Best combination with TV
+        "layers6_modes10_tv": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10, "num_layers": 6}},
+            "loss": {"tv_weight": 0.01}
+        },
+
+        # ============================================
+        # 901-sample combined dataset ablations
+        # (Use with --base-config configs/config_combined.yaml)
+        # ============================================
+
+        # Baseline for combined dataset
+        "baseline_901": {},
+
+        # Depth ablations (exploring deeper models with more data)
+        "layers_6_901": {
+            "model": {"fno": {"num_layers": 6}}
+        },
+        "layers_7_901": {
+            "model": {"fno": {"num_layers": 7}}
+        },
+        "layers_8_901": {
+            "model": {"fno": {"num_layers": 8}}
+        },
+
+        # Modes ablation
+        "modes_10_901": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10}}
+        },
+
+        # TV regularization ablations
+        "no_tv_901": {
+            "loss": {"tv_weight": 0.0}
+        },
+        "tv_0.02_901": {
+            "loss": {"tv_weight": 0.02}
+        },
+
+        # Analytical solution input
+        "analytical_solution": {
+            "model": {"add_analytical_solution": True}
+        },
+        "layers6_analytical": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True}
+        },
+
+        # Best combinations with 901 samples
+        "layers6_modes10_901": {
+            "model": {"fno": {"modes1": 10, "modes2": 10, "modes3": 10, "num_layers": 6}}
+        },
+        "layers6_tv_0.02_901": {
+            "model": {"fno": {"num_layers": 6}},
+            "loss": {"tv_weight": 0.02}
+        },
+        "layers7_tv_901": {
+            "model": {"fno": {"num_layers": 7}},
+            "loss": {"tv_weight": 0.01}
+        },
+
+        # Full combination: layers + modes + analytical
+        "layers6_analytical_tv": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True},
+            "loss": {"tv_weight": 0.01}
+        },
     }
 
     if args.experiment == "all":

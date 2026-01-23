@@ -206,7 +206,7 @@ def create_singularity_distance_mask(
 
     for b in range(B):
         # Find source peak
-        source_flat = source[b, 0].view(-1)
+        source_flat = source[b, 0].reshape(-1)
         max_idx = torch.argmax(torch.abs(source_flat))
         z_idx = max_idx // (H * W)
         y_idx = (max_idx % (H * W)) // W

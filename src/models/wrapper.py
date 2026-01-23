@@ -29,6 +29,7 @@ class PotentialFieldModel(nn.Module):
         geometry_num_layers: int = 2,
         unet_config: Optional[Dict] = None,
         fno_config: Optional[Dict] = None,
+        add_analytical_solution: bool = False,
     ):
         """Initialize the potential field model.
 
@@ -42,16 +43,21 @@ class PotentialFieldModel(nn.Module):
             geometry_num_layers: Number of layers in geometry encoder
             unet_config: Configuration dict for UNet backbone
             fno_config: Configuration dict for FNO backbone
+            add_analytical_solution: If True, expect analytical solution as extra input
         """
         super().__init__()
 
         self.backbone_type = backbone_type.lower()
+        self.add_analytical_solution = add_analytical_solution
+
+        # If using analytical solution, increase source channels
+        effective_source_channels = source_channels + (1 if add_analytical_solution else 0)
 
         # Combined encoder with additive spacing conditioning
         encoder_out_channels = geometry_hidden_dim
         self.encoder = CombinedEncoder(
             sigma_channels=sigma_channels,
-            source_channels=source_channels,
+            source_channels=effective_source_channels,
             coord_channels=coord_channels,
             geometry_hidden_dim=geometry_hidden_dim,
             geometry_num_layers=geometry_num_layers,
@@ -89,6 +95,7 @@ class PotentialFieldModel(nn.Module):
         source: torch.Tensor,
         coords: torch.Tensor,
         spacing: torch.Tensor,
+        analytical: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass through the model.
@@ -98,11 +105,16 @@ class PotentialFieldModel(nn.Module):
             source: Source field (B, 1, D, H, W)
             coords: Normalized coordinates (B, 3, D, H, W)
             spacing: Voxel spacing (B, 3)
+            analytical: Optional analytical solution (B, 1, D, H, W)
             **kwargs: Additional arguments (ignored)
 
         Returns:
             Predicted potential field (B, 1, D, H, W)
         """
+        # Concatenate analytical solution with source if provided
+        if self.add_analytical_solution and analytical is not None:
+            source = torch.cat([source, analytical], dim=1)
+
         # Encode inputs
         features = self.encoder(sigma, source, coords, spacing)
 
@@ -134,6 +146,9 @@ def build_model(config: Dict) -> PotentialFieldModel:
     unet_config = model_config.get("unet", {})
     fno_config = model_config.get("fno", {})
 
+    # Analytical solution option
+    add_analytical_solution = model_config.get("add_analytical_solution", False)
+
     model = PotentialFieldModel(
         backbone_type=backbone_type,
         sigma_channels=6,
@@ -144,6 +159,7 @@ def build_model(config: Dict) -> PotentialFieldModel:
         geometry_num_layers=geometry_num_layers,
         unet_config=unet_config,
         fno_config=fno_config,
+        add_analytical_solution=add_analytical_solution,
     )
 
     return model
