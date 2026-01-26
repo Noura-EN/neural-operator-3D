@@ -1,0 +1,96 @@
+data:
+  batch_size: 1
+  data_dir: data
+  data_dirs:
+  - data
+  - data/downsampled_highres
+  - data/highres_training_samples
+  num_workers: 0
+  pin_memory: true
+  test_split: 0.15
+  train_split: 0.7
+  val_split: 0.15
+evaluation:
+  resolution_invariance_test: true
+  test_resolutions:
+  - - 192
+    - 96
+    - 96
+  - - 96
+    - 48
+    - 48
+experiment:
+  use_singularity_mask: true
+grid:
+  base_resolution:
+  - 96
+  - 48
+  - 48
+  conductivity_epsilon: 1.0e-06
+  coord_range:
+  - -1.0
+  - 1.0
+  log_conductivity: false
+  test_resolution:
+  - 96
+  - 48
+  - 48
+  train_resolution:
+  - 96
+  - 48
+  - 48
+logging:
+  experiment_name: mixed_resolution_training
+  log_dir: logs
+  project_name: neural-operator-3d
+  use_tensorboard: true
+  use_wandb: false
+  vis_dir: visualizations
+  vis_freq: 10
+  vis_slices:
+  - axial
+  - sagittal
+loss:
+  pde_weight: 0.0
+  spectral_mode: threshold
+  spectral_weight: 0.0
+  tv_weight: 0.01
+  type: mse
+model:
+  add_analytical_solution: true
+  backbone: fno
+  fno:
+    fc_dim: 128
+    modes1: 8
+    modes2: 8
+    modes3: 8
+    num_layers: 6
+    width: 32
+  geometry_encoder:
+    enabled: true
+    hidden_dim: 64
+    num_layers: 2
+physics:
+  analytical:
+    current_I: 1.0
+    epsilon_factor: 0.1
+  mse:
+    singularity_mask_radius: 3
+  pde:
+    conductivity_threshold: 1.0e-06
+training:
+  checkpoint_dir: checkpoints
+  checkpoint_freq: 10
+  early_stopping_delta: 1.0e-06
+  early_stopping_patience: 10
+  epochs: 100
+  learning_rate: 0.001
+  loss_weights:
+    mse: 1.0
+    pde: 0.5
+  resume_from: null
+  scheduler: cosine
+  scheduler_params:
+    T_max: 100
+    eta_min: 1.0e-06
+  weight_decay: 1.0e-05

@@ -80,8 +80,8 @@ class SpacingConditioner(nn.Module):
     This module creates a spatial modulation based on the physical voxel spacing,
     which is critical for resolution-independent operator learning.
 
-    Uses additive conditioning: features + mlp(spacing)
-    This was found to be the best performing mode in ablation studies.
+    Uses additive conditioning: features + mlp(transform(spacing))
+    Supports different spacing transformations for better generalization.
     """
 
     def __init__(
@@ -89,6 +89,8 @@ class SpacingConditioner(nn.Module):
         spacing_dim: int = 3,
         feature_dim: int = 64,
         hidden_dim: int = 32,
+        spacing_transform: str = "none",
+        reference_spacing: float = 2.0,
     ):
         """Initialize SpacingConditioner.
 
@@ -96,9 +98,16 @@ class SpacingConditioner(nn.Module):
             spacing_dim: Dimension of spacing vector (3 for dx, dy, dz)
             feature_dim: Dimension of features to condition
             hidden_dim: Hidden dimension for the MLP
+            spacing_transform: Transform to apply to spacing before MLP
+                - "none": Use raw spacing values (default)
+                - "log": Apply log transform (better for extrapolation)
+                - "normalized": Divide by reference_spacing
+            reference_spacing: Reference spacing for normalization (default: 2.0mm)
         """
         super().__init__()
         self.feature_dim = feature_dim
+        self.spacing_transform = spacing_transform
+        self.reference_spacing = reference_spacing
 
         # Additive conditioning: features + mlp(spacing)
         self.mlp = nn.Sequential(
@@ -107,6 +116,19 @@ class SpacingConditioner(nn.Module):
             nn.Linear(hidden_dim, feature_dim),
             # No activation - can be positive or negative
         )
+
+    def _transform_spacing(self, spacing: torch.Tensor) -> torch.Tensor:
+        """Apply transformation to spacing values."""
+        if self.spacing_transform == "log":
+            # Log transform: compresses range, better for extrapolation
+            # Add small epsilon to avoid log(0)
+            return torch.log(spacing + 1e-6)
+        elif self.spacing_transform == "normalized":
+            # Normalize to reference spacing
+            return spacing / self.reference_spacing
+        else:
+            # No transform
+            return spacing
 
     def forward(
         self,
@@ -122,7 +144,10 @@ class SpacingConditioner(nn.Module):
         Returns:
             Conditioned features of shape (B, C, D, H, W)
         """
-        bias = self.mlp(spacing)  # (B, C)
+        # Apply transform to spacing
+        transformed_spacing = self._transform_spacing(spacing)
+
+        bias = self.mlp(transformed_spacing)  # (B, C)
         bias = bias.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         return features + bias
 
@@ -133,7 +158,7 @@ class CombinedEncoder(nn.Module):
     This module:
     1. Encodes the conductivity tensor via GeometryEncoder
     2. Concatenates with source field, coordinates
-    3. Applies additive spacing conditioning (found to be optimal in ablations)
+    3. Optionally applies additive spacing conditioning (found to be optimal in ablations)
     """
 
     def __init__(
@@ -144,6 +169,9 @@ class CombinedEncoder(nn.Module):
         geometry_hidden_dim: int = 64,
         geometry_num_layers: int = 2,
         out_channels: int = 64,
+        use_spacing_conditioning: bool = True,
+        spacing_transform: str = "none",
+        reference_spacing: float = 2.0,
     ):
         """Initialize CombinedEncoder.
 
@@ -154,8 +182,13 @@ class CombinedEncoder(nn.Module):
             geometry_hidden_dim: Hidden dimension for geometry encoder
             geometry_num_layers: Number of layers in geometry encoder
             out_channels: Output channels
+            use_spacing_conditioning: Whether to apply spacing-based conditioning
+            spacing_transform: Transform for spacing values ("none", "log", "normalized")
+            reference_spacing: Reference spacing for normalization (default: 2.0mm)
         """
         super().__init__()
+
+        self.use_spacing_conditioning = use_spacing_conditioning
 
         self.geometry_encoder = GeometryEncoder(
             in_channels=sigma_channels,
@@ -174,10 +207,16 @@ class CombinedEncoder(nn.Module):
         )
 
         # Additive spacing conditioning (best performing mode)
-        self.spacing_conditioner = SpacingConditioner(
-            spacing_dim=3,
-            feature_dim=out_channels,
-        )
+        # Only create if enabled
+        if use_spacing_conditioning:
+            self.spacing_conditioner = SpacingConditioner(
+                spacing_dim=3,
+                feature_dim=out_channels,
+                spacing_transform=spacing_transform,
+                reference_spacing=reference_spacing,
+            )
+        else:
+            self.spacing_conditioner = None
 
         self.out_channels = out_channels
 
@@ -208,7 +247,8 @@ class CombinedEncoder(nn.Module):
         # Fuse features
         features = self.fusion(combined)
 
-        # Apply additive spacing conditioning
-        features = self.spacing_conditioner(features, spacing)
+        # Apply additive spacing conditioning if enabled
+        if self.use_spacing_conditioning and self.spacing_conditioner is not None:
+            features = self.spacing_conditioner(features, spacing)
 
         return features

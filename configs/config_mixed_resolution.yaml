@@ -1,0 +1,92 @@
+# Configuration for mixed-resolution training
+# 501 original low-res + 400 downsampled + 50 original high-res samples
+# This exposes the spacing MLP to both low-res (~1.6-2.7mm) and high-res (~0.75-0.94mm) spacing values
+
+data:
+  # Use multiple data directories including high-res samples
+  data_dirs:
+    - data                          # 501 original 48x48x96 samples
+    - data/downsampled_highres      # 400 downsampled 48x48x96 samples
+    - data/highres_training_samples # 50 original 192x96x96 samples (NOT holdout)
+  data_dir: data  # Fallback (not used when data_dirs is set)
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  batch_size: 1  # Must be 1 for mixed resolutions
+  num_workers: 0
+  pin_memory: true
+
+model:
+  backbone: fno
+  add_analytical_solution: true  # Physics-informed input
+  geometry_encoder:
+    enabled: true
+    hidden_dim: 64
+    num_layers: 2
+  fno:
+    modes1: 8
+    modes2: 8
+    modes3: 8
+    width: 32
+    num_layers: 6  # Best depth
+    fc_dim: 128
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler: cosine
+  scheduler_params:
+    T_max: 100
+    eta_min: 0.000001
+  loss_weights:
+    mse: 1.0
+    pde: 0.5
+  checkpoint_dir: checkpoints
+  checkpoint_freq: 10
+  resume_from: null
+  early_stopping_patience: 10
+  early_stopping_delta: 0.000001
+
+loss:
+  type: mse
+  pde_weight: 0.0
+  spectral_weight: 0.0
+  spectral_mode: threshold
+  tv_weight: 0.01
+
+experiment:
+  use_singularity_mask: true
+
+grid:
+  base_resolution: [96, 48, 48]
+  train_resolution: [96, 48, 48]
+  test_resolution: [96, 48, 48]
+  coord_range: [-1.0, 1.0]
+  log_conductivity: false
+  conductivity_epsilon: 0.000001
+
+physics:
+  analytical:
+    epsilon_factor: 0.1
+    current_I: 1.0
+  pde:
+    conductivity_threshold: 0.000001
+  mse:
+    singularity_mask_radius: 3
+
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: logs
+  project_name: neural-operator-3d
+  experiment_name: mixed_resolution_training
+  vis_freq: 10
+  vis_slices: [axial, sagittal]
+  vis_dir: visualizations
+
+evaluation:
+  resolution_invariance_test: true
+  test_resolutions:
+    - [192, 96, 96]
+    - [96, 48, 48]

@@ -302,6 +302,111 @@ def main():
             "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True},
             "loss": {"tv_weight": 0.01}
         },
+
+        # ============================================
+        # Super-resolution experiments
+        # Test if removing spacing conditioning improves zero-shot super-res
+        # ============================================
+
+        # No spacing conditioning + analytical solution
+        # Hypothesis: spacing MLP extrapolates poorly to unseen spacing values
+        # Analytical solution provides physics-aware scale information instead
+        "no_spacing_analytical": {
+            "model": {"add_analytical_solution": True},
+            "spacing": {"use_spacing_conditioning": False}
+        },
+
+        # Best model without spacing conditioning
+        "no_spacing_layers6_analytical": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True},
+            "spacing": {"use_spacing_conditioning": False}
+        },
+
+        # Baseline without spacing (for comparison)
+        "no_spacing_baseline": {
+            "spacing": {"use_spacing_conditioning": False}
+        },
+
+        # ============================================
+        # Mixed-resolution training experiments
+        # Include 50 original high-res samples to expose spacing MLP to high-res spacing
+        # ============================================
+
+        # Mixed resolution with layers6 + analytical (use config_mixed_resolution.yaml as base)
+        "mixed_res_layers6_analytical": {},
+
+        # ============================================
+        # Spacing transform experiments
+        # Test different spacing transformations for better generalization
+        # ============================================
+
+        # Log-transform spacing (compresses range for better extrapolation)
+        "log_spacing_analytical": {
+            "model": {"add_analytical_solution": True},
+            "spacing": {"spacing_transform": "log"}
+        },
+        "log_spacing_layers6_analytical": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True},
+            "spacing": {"spacing_transform": "log"}
+        },
+
+        # Normalized spacing (divide by reference spacing)
+        "normalized_spacing_analytical": {
+            "model": {"add_analytical_solution": True},
+            "spacing": {"spacing_transform": "normalized", "reference_spacing": 2.0}
+        },
+        "normalized_spacing_layers6_analytical": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True},
+            "spacing": {"spacing_transform": "normalized", "reference_spacing": 2.0}
+        },
+
+        # ============================================
+        # Spacing conditioning comparison (option 4 vs 5)
+        # Option 4: No spacing, no analytical
+        # Option 5: No spacing, with analytical (already tested as no_spacing_analytical)
+        # ============================================
+
+        # Option 4: No spacing conditioning, no analytical solution
+        "no_spacing_no_analytical": {
+            "spacing": {"use_spacing_conditioning": False}
+        },
+        "no_spacing_no_analytical_layers6": {
+            "model": {"fno": {"num_layers": 6}},
+            "spacing": {"use_spacing_conditioning": False}
+        },
+
+        # ============================================
+        # Residual learning experiments
+        # Predict (u - analytical) instead of u directly
+        # ============================================
+
+        # Residual learning with baseline architecture
+        "residual_learning": {
+            "model": {"add_analytical_solution": True, "residual_learning": True}
+        },
+
+        # Residual learning with layers=6
+        "residual_learning_layers6": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True, "residual_learning": True}
+        },
+
+        # Residual learning without spacing conditioning
+        "residual_learning_no_spacing": {
+            "model": {"add_analytical_solution": True, "residual_learning": True},
+            "spacing": {"use_spacing_conditioning": False}
+        },
+
+        # Residual learning with log spacing
+        "residual_learning_log_spacing": {
+            "model": {"add_analytical_solution": True, "residual_learning": True},
+            "spacing": {"spacing_transform": "log"}
+        },
+
+        # Best combo: residual + layers6 + log spacing
+        "residual_layers6_log_spacing": {
+            "model": {"fno": {"num_layers": 6}, "add_analytical_solution": True, "residual_learning": True},
+            "spacing": {"spacing_transform": "log"}
+        },
     }
 
     if args.experiment == "all":
