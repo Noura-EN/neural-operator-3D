@@ -32,7 +32,6 @@ class HighResDataset(PotentialFieldDataset):
         self,
         data_dir,
         holdout_indices,
-        coord_range=(-1.0, 1.0),
         add_analytical_solution=False,
     ):
         """Initialize high-res dataset with specific holdout indices.
@@ -40,12 +39,9 @@ class HighResDataset(PotentialFieldDataset):
         Args:
             data_dir: Directory containing high-res samples
             holdout_indices: List of sample indices to use
-            coord_range: Range for normalized coordinates
             add_analytical_solution: If True, compute analytical solution
         """
         self.data_dir = Path(data_dir)
-        self.coord_range = coord_range
-        self.use_physical_coords = False
         self.add_spacing_channels = False
         self.add_analytical_solution = add_analytical_solution
 

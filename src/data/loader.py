@@ -2,11 +2,36 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
+
+
+def load_exclusion_list(exclusion_file: Union[str, Path]) -> Set[str]:
+    """Load list of sample filenames to exclude.
+
+    Args:
+        exclusion_file: Path to exclusion list file (one filename per line, # for comments)
+
+    Returns:
+        Set of filenames to exclude
+    """
+    exclusion_file = Path(exclusion_file)
+    if not exclusion_file.exists():
+        return set()
+
+    excluded = set()
+    with open(exclusion_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # Handle CSV format (filename,ratio,umax)
+                filename = line.split(',')[0].strip()
+                excluded.add(filename)
+
+    return excluded
 
 
 class PotentialFieldDataset(Dataset):
@@ -25,9 +50,7 @@ class PotentialFieldDataset(Dataset):
         self,
         data_dir: Union[str, Path],
         sample_indices: Optional[List[int]] = None,
-        coord_range: Tuple[float, float] = (-1.0, 1.0),
         device: str = "cpu",
-        use_physical_coords: bool = False,
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
     ):
@@ -36,16 +59,12 @@ class PotentialFieldDataset(Dataset):
         Args:
             data_dir: Directory containing .npz sample files
             sample_indices: List of sample indices to use (for train/val/test splits)
-            coord_range: Range for normalized coordinates (default: [-1, 1])
             device: Device to load tensors to
-            use_physical_coords: If True, scale coordinates by spacing
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, compute and add monopole analytical solution
         """
         self.data_dir = Path(data_dir)
-        self.coord_range = coord_range
         self.device = device
-        self.use_physical_coords = use_physical_coords
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
 
@@ -63,45 +82,27 @@ class PotentialFieldDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sample_files)
 
-    def _generate_coords(
-        self,
-        shape: Tuple[int, int, int],
-        spacing: Optional[np.ndarray] = None,
-        use_physical_coords: bool = False,
-    ) -> torch.Tensor:
-        """Generate coordinate grids.
+    def _generate_coords(self, shape: Tuple[int, int, int]) -> torch.Tensor:
+        """Generate normalized coordinate grids [-1, 1].
+
+        Resolution independence is achieved through:
+        - Normalized coords: encode relative position in domain
+        - Spacing conditioning (separate): encode physical voxel size
 
         Args:
             shape: Grid shape (D, H, W)
-            spacing: Physical voxel spacing (3,) - only used if use_physical_coords=True
-            use_physical_coords: If True, scale coords by spacing to get physical positions
 
         Returns:
-            Coordinate tensor of shape (3, D, H, W) with X, Y, Z meshgrids
+            Coordinate tensor of shape (3, D, H, W) with X, Y, Z in [-1, 1]
         """
         D, H, W = shape
-        low, high = self.coord_range
 
-        # Create 1D coordinate arrays (normalized to coord_range)
-        z = torch.linspace(low, high, D)
-        y = torch.linspace(low, high, H)
-        x = torch.linspace(low, high, W)
+        z = torch.linspace(-1, 1, D)
+        y = torch.linspace(-1, 1, H)
+        x = torch.linspace(-1, 1, W)
 
-        # Create meshgrid with 'ij' indexing
         Z, Y, X = torch.meshgrid(z, y, x, indexing='ij')
-
-        # Stack to (3, D, H, W) - order is X, Y, Z
         coords = torch.stack([X, Y, Z], dim=0)
-
-        # If using physical coordinates, scale by spacing
-        if use_physical_coords and spacing is not None:
-            # spacing is (dx, dy, dz), coords are (X, Y, Z)
-            # Scale each coordinate by corresponding spacing
-            # This makes coordinates represent physical positions
-            spacing_tensor = torch.from_numpy(spacing).float()
-            # Reshape for broadcasting: (3,) -> (3, 1, 1, 1)
-            spacing_scale = spacing_tensor.view(3, 1, 1, 1)
-            coords = coords * spacing_scale
 
         return coords
 
@@ -199,14 +200,9 @@ class PotentialFieldDataset(Dataset):
         spacing = torch.from_numpy(spacing).float()  # (3,)
         source_point = torch.from_numpy(source_point).float()  # (3,)
 
-        # Generate coordinates (normalized or physical)
+        # Generate normalized coordinates [-1, 1]
         grid_shape = sigma.shape[1:]  # (D, H, W)
-        spacing_np = data['spacing']  # Keep numpy version for coord generation
-        coords = self._generate_coords(
-            grid_shape,
-            spacing=spacing_np,
-            use_physical_coords=self.use_physical_coords,
-        )
+        coords = self._generate_coords(grid_shape)
 
         result = {
             'sigma': sigma,
@@ -245,6 +241,7 @@ def create_data_splits(
     val_split: float = 0.15,
     test_split: float = 0.15,
     seed: int = 42,
+    exclusion_file: Optional[Union[str, Path]] = None,
 ) -> Tuple[List[int], List[int], List[int]]:
     """Create train/val/test splits from data directory.
 
@@ -254,25 +251,43 @@ def create_data_splits(
         val_split: Fraction for validation
         test_split: Fraction for testing
         seed: Random seed for reproducibility
+        exclusion_file: Optional path to file listing samples to exclude
 
     Returns:
         Tuple of (train_indices, val_indices, test_indices)
     """
     data_dir = Path(data_dir)
     all_files = sorted(data_dir.glob("sample_*.npz"))
-    n_samples = len(all_files)
+
+    # Load exclusion list if provided
+    excluded = set()
+    if exclusion_file is not None:
+        excluded = load_exclusion_list(exclusion_file)
+        if excluded:
+            print(f"Loaded {len(excluded)} samples to exclude")
+
+    # Filter out excluded samples, keeping track of valid indices
+    valid_indices = []
+    for i, f in enumerate(all_files):
+        if f.name not in excluded:
+            valid_indices.append(i)
+
+    n_samples = len(valid_indices)
+    if excluded:
+        print(f"Using {n_samples} samples after exclusion (removed {len(all_files) - n_samples})")
 
     # Set seed for reproducibility
     rng = np.random.default_rng(seed)
-    indices = rng.permutation(n_samples)
+    shuffled = rng.permutation(n_samples)
 
     # Calculate split sizes
     n_train = int(n_samples * train_split)
     n_val = int(n_samples * val_split)
 
-    train_indices = indices[:n_train].tolist()
-    val_indices = indices[n_train:n_train + n_val].tolist()
-    test_indices = indices[n_train + n_val:].tolist()
+    # Map back to original indices
+    train_indices = [valid_indices[i] for i in shuffled[:n_train]]
+    val_indices = [valid_indices[i] for i in shuffled[n_train:n_train + n_val]]
+    test_indices = [valid_indices[i] for i in shuffled[n_train + n_val:]]
 
     return train_indices, val_indices, test_indices
 
@@ -283,6 +298,7 @@ def create_combined_data_splits(
     val_split: float = 0.15,
     test_split: float = 0.15,
     seed: int = 42,
+    exclusion_file: Optional[Union[str, Path]] = None,
 ) -> Dict[str, List[Tuple[Path, int]]]:
     """Create train/val/test splits from multiple data directories.
 
@@ -295,32 +311,53 @@ def create_combined_data_splits(
         val_split: Fraction for validation
         test_split: Fraction for testing
         seed: Random seed for reproducibility
+        exclusion_file: Optional path to file listing samples to exclude
 
     Returns:
         Dict with keys 'train', 'val', 'test', each containing list of (dir, index) tuples
     """
     rng = np.random.default_rng(seed)
 
+    # Load exclusion list if provided
+    excluded = set()
+    if exclusion_file is not None:
+        excluded = load_exclusion_list(exclusion_file)
+        if excluded:
+            print(f"Loaded {len(excluded)} samples to exclude")
+
     splits = {'train': [], 'val': [], 'test': []}
+    total_excluded = 0
 
     for data_dir in data_dirs:
         data_dir = Path(data_dir)
         all_files = sorted(data_dir.glob("sample_*.npz"))
-        n_samples = len(all_files)
+
+        if len(all_files) == 0:
+            continue
+
+        # Filter out excluded samples, keeping track of valid indices
+        valid_indices = []
+        for i, f in enumerate(all_files):
+            if f.name not in excluded:
+                valid_indices.append(i)
+
+        n_excluded_here = len(all_files) - len(valid_indices)
+        total_excluded += n_excluded_here
+        n_samples = len(valid_indices)
 
         if n_samples == 0:
             continue
 
-        # Shuffle indices for this directory
-        indices = rng.permutation(n_samples)
+        # Shuffle valid indices for this directory
+        shuffled = rng.permutation(n_samples)
 
         # Calculate split sizes
         n_train = int(n_samples * train_split)
         n_val = int(n_samples * val_split)
 
-        train_indices = indices[:n_train].tolist()
-        val_indices = indices[n_train:n_train + n_val].tolist()
-        test_indices = indices[n_train + n_val:].tolist()
+        train_indices = [valid_indices[i] for i in shuffled[:n_train]]
+        val_indices = [valid_indices[i] for i in shuffled[n_train:n_train + n_val]]
+        test_indices = [valid_indices[i] for i in shuffled[n_train + n_val:]]
 
         # Add (directory, index) tuples to splits
         for idx in train_indices:
@@ -329,6 +366,10 @@ def create_combined_data_splits(
             splits['val'].append((data_dir, idx))
         for idx in test_indices:
             splits['test'].append((data_dir, idx))
+
+    if excluded and total_excluded > 0:
+        total_samples = sum(len(s) for s in splits.values())
+        print(f"Using {total_samples} samples after exclusion (removed {total_excluded})")
 
     # Shuffle each split to mix samples from different directories
     for split_name in splits:
@@ -343,8 +384,6 @@ class CombinedPotentialFieldDataset(Dataset):
     def __init__(
         self,
         samples: List[Tuple[Path, int]],
-        coord_range: Tuple[float, float] = (-1.0, 1.0),
-        use_physical_coords: bool = False,
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
     ):
@@ -352,14 +391,10 @@ class CombinedPotentialFieldDataset(Dataset):
 
         Args:
             samples: List of (directory, sample_index) tuples
-            coord_range: Range for normalized coordinates
-            use_physical_coords: If True, scale coordinates by spacing
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, add monopole analytical solution
         """
         self.samples = samples
-        self.coord_range = coord_range
-        self.use_physical_coords = use_physical_coords
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
 
@@ -373,27 +408,16 @@ class CombinedPotentialFieldDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sample_files)
 
-    def _generate_coords(
-        self,
-        shape: Tuple[int, int, int],
-        spacing: Optional[np.ndarray] = None,
-        use_physical_coords: bool = False,
-    ) -> torch.Tensor:
-        """Generate coordinate grids."""
+    def _generate_coords(self, shape: Tuple[int, int, int]) -> torch.Tensor:
+        """Generate normalized coordinate grids [-1, 1]."""
         D, H, W = shape
-        low, high = self.coord_range
 
-        z = torch.linspace(low, high, D)
-        y = torch.linspace(low, high, H)
-        x = torch.linspace(low, high, W)
+        z = torch.linspace(-1, 1, D)
+        y = torch.linspace(-1, 1, H)
+        x = torch.linspace(-1, 1, W)
 
         Z, Y, X = torch.meshgrid(z, y, x, indexing='ij')
         coords = torch.stack([X, Y, Z], dim=0)
-
-        if use_physical_coords and spacing is not None:
-            spacing_tensor = torch.from_numpy(spacing).float()
-            spacing_scale = spacing_tensor.view(3, 1, 1, 1)
-            coords = coords * spacing_scale
 
         return coords
 
@@ -452,11 +476,7 @@ class CombinedPotentialFieldDataset(Dataset):
         source_point_tensor = torch.from_numpy(source_point).float()
 
         grid_shape = sigma.shape[1:]
-        coords = self._generate_coords(
-            grid_shape,
-            spacing=spacing,
-            use_physical_coords=self.use_physical_coords,
-        )
+        coords = self._generate_coords(grid_shape)
 
         result = {
             'sigma': sigma,
@@ -501,15 +521,15 @@ def get_dataloaders(
     """
     data_config = config['data']
 
-    coord_range = tuple(config['grid']['coord_range'])
-
     # Spacing encoding options
     spacing_config = config.get('spacing', {})
-    use_physical_coords = spacing_config.get('use_physical_coords', False)
     add_spacing_channels = spacing_config.get('add_spacing_channels', False)
 
     # Analytical solution option
     add_analytical_solution = config.get('model', {}).get('add_analytical_solution', False)
+
+    # Exclusion list (optional)
+    exclusion_file = data_config.get('exclusion_file', None)
 
     # Check if using combined directories
     data_dirs = data_config.get('data_dirs', None)
@@ -522,28 +542,23 @@ def get_dataloaders(
             val_split=data_config['val_split'],
             test_split=data_config['test_split'],
             seed=seed,
+            exclusion_file=exclusion_file,
         )
 
         train_dataset = CombinedPotentialFieldDataset(
             samples=splits['train'],
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )
 
         val_dataset = CombinedPotentialFieldDataset(
             samples=splits['val'],
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )
 
         test_dataset = CombinedPotentialFieldDataset(
             samples=splits['test'],
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )
@@ -555,13 +570,12 @@ def get_dataloaders(
             val_split=data_config['val_split'],
             test_split=data_config['test_split'],
             seed=seed,
+            exclusion_file=exclusion_file,
         )
 
         train_dataset = PotentialFieldDataset(
             data_dir=data_config['data_dir'],
             sample_indices=train_indices,
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )
@@ -569,8 +583,6 @@ def get_dataloaders(
         val_dataset = PotentialFieldDataset(
             data_dir=data_config['data_dir'],
             sample_indices=val_indices,
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )
@@ -578,8 +590,6 @@ def get_dataloaders(
         test_dataset = PotentialFieldDataset(
             data_dir=data_config['data_dir'],
             sample_indices=test_indices,
-            coord_range=coord_range,
-            use_physical_coords=use_physical_coords,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
         )

@@ -67,7 +67,6 @@ grid:
   base_resolution: [96, 48, 48]
   train_resolution: [96, 48, 48]
   test_resolution: [96, 48, 48]
-  coord_range: [-1.0, 1.0]
   log_conductivity: false
   conductivity_epsilon: 0.000001
 

@@ -4,6 +4,7 @@ from .loader import (
     PotentialFieldDataset,
     create_data_splits,
     get_dataloaders,
+    load_exclusion_list,
 )
 from .transforms import (
     resample_volume,
@@ -16,6 +17,7 @@ __all__ = [
     "PotentialFieldDataset",
     "create_data_splits",
     "get_dataloaders",
+    "load_exclusion_list",
     "resample_volume",
     "resample_batch",
     "normalize_field",
