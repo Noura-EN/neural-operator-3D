@@ -53,6 +53,8 @@ class PotentialFieldDataset(Dataset):
         device: str = "cpu",
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
+        normalize_target: bool = False,
+        singularity_percentile: float = 99.0,
     ):
         """Initialize dataset.
 
@@ -62,11 +64,15 @@ class PotentialFieldDataset(Dataset):
             device: Device to load tensors to
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, compute and add monopole analytical solution
+            normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
+            singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
         """
         self.data_dir = Path(data_dir)
         self.device = device
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
+        self.normalize_target = normalize_target
+        self.singularity_percentile = singularity_percentile
 
         # Find all sample files
         all_files = sorted(self.data_dir.glob("sample_*.npz"))
@@ -168,6 +174,71 @@ class PotentialFieldDataset(Dataset):
         # Convert to tensor (1, D, H, W)
         return torch.from_numpy(analytical).unsqueeze(0).float()
 
+    def _create_valid_mask(
+        self,
+        target: torch.Tensor,
+        muscle_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Create combined mask excluding singularity region.
+
+        Args:
+            target: Potential field (1, D, H, W)
+            muscle_mask: Muscle region mask (1, D, H, W)
+
+        Returns:
+            Valid mask (1, D, H, W) - muscle region excluding singularity
+        """
+        # Get values within muscle region
+        muscle_bool = muscle_mask > 0.5
+        muscle_values = target[muscle_bool]
+
+        if muscle_values.numel() == 0:
+            return muscle_mask
+
+        # Compute threshold for singularity (top X% of absolute values)
+        threshold = torch.quantile(torch.abs(muscle_values), self.singularity_percentile / 100.0)
+
+        # Singularity mask: where |target| > threshold
+        singularity_mask = torch.abs(target) > threshold
+
+        # Combined mask: muscle AND NOT singularity
+        valid_mask = muscle_bool & ~singularity_mask
+
+        return valid_mask.float()
+
+    def _normalize_target(
+        self,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Normalize target by valid-region statistics.
+
+        Args:
+            target: Potential field (1, D, H, W)
+            valid_mask: Valid region mask (1, D, H, W)
+
+        Returns:
+            Tuple of (normalized_target, mean, std)
+        """
+        valid_bool = valid_mask > 0.5
+        valid_values = target[valid_bool]
+
+        if valid_values.numel() == 0:
+            # Fallback to full volume stats
+            mean = target.mean()
+            std = target.std()
+        else:
+            mean = valid_values.mean()
+            std = valid_values.std()
+
+        # Avoid division by zero
+        std = torch.clamp(std, min=1e-8)
+
+        # Normalize
+        target_normalized = (target - mean) / std
+
+        return target_normalized, mean, std
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Load a single sample.
 
@@ -177,9 +248,12 @@ class PotentialFieldDataset(Dataset):
                 - source: (1, D, H, W) source field
                 - coords: (3, D, H, W) normalized coordinates (X, Y, Z)
                 - spacing: (3,) physical voxel spacing
-                - mask: (1, D, H, W) binary mask
-                - target: (1, D, H, W) FEM ground truth
+                - mask: (1, D, H, W) binary mask (muscle region)
+                - valid_mask: (1, D, H, W) valid mask (muscle excluding singularity)
+                - target: (1, D, H, W) FEM ground truth (optionally normalized)
                 - source_point: (3,) source location
+                - target_mean: scalar, mean used for normalization (if normalize_target=True)
+                - target_std: scalar, std used for normalization (if normalize_target=True)
         """
         data = np.load(self.sample_files[idx])
 
@@ -195,10 +269,19 @@ class PotentialFieldDataset(Dataset):
         # Transpose sigma from (D, H, W, 6) to (6, D, H, W)
         sigma = torch.from_numpy(sigma).permute(3, 0, 1, 2).float()
         source = torch.from_numpy(source).unsqueeze(0).float()  # (1, D, H, W)
-        mask = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0)  # (1, D, H, W)
+        muscle_mask = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0)  # (1, D, H, W)
         target = torch.from_numpy(u).unsqueeze(0).float()  # (1, D, H, W)
         spacing = torch.from_numpy(spacing).float()  # (3,)
         source_point = torch.from_numpy(source_point).float()  # (3,)
+
+        # Create valid mask (muscle excluding singularity)
+        valid_mask = self._create_valid_mask(target, muscle_mask)
+
+        # Optionally normalize target
+        target_mean = torch.tensor(0.0)
+        target_std = torch.tensor(1.0)
+        if self.normalize_target:
+            target, target_mean, target_std = self._normalize_target(target, valid_mask)
 
         # Generate normalized coordinates [-1, 1]
         grid_shape = sigma.shape[1:]  # (D, H, W)
@@ -209,9 +292,12 @@ class PotentialFieldDataset(Dataset):
             'source': source,
             'coords': coords,
             'spacing': spacing,
-            'mask': mask,
+            'mask': muscle_mask,
+            'valid_mask': valid_mask,
             'target': target,
             'source_point': source_point,
+            'target_mean': target_mean,
+            'target_std': target_std,
         }
 
         # Optionally add spacing as explicit channels
@@ -386,6 +472,8 @@ class CombinedPotentialFieldDataset(Dataset):
         samples: List[Tuple[Path, int]],
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
+        normalize_target: bool = False,
+        singularity_percentile: float = 99.0,
     ):
         """Initialize combined dataset.
 
@@ -393,10 +481,14 @@ class CombinedPotentialFieldDataset(Dataset):
             samples: List of (directory, sample_index) tuples
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, add monopole analytical solution
+            normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
+            singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
         """
         self.samples = samples
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
+        self.normalize_target = normalize_target
+        self.singularity_percentile = singularity_percentile
 
         # Build file list
         self.sample_files = []
@@ -457,6 +549,45 @@ class CombinedPotentialFieldDataset(Dataset):
         analytical = 1.0 / (4.0 * np.pi * sigma_avg * r)
         return torch.from_numpy(analytical).unsqueeze(0).float()
 
+    def _create_valid_mask(
+        self,
+        target: torch.Tensor,
+        muscle_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Create combined mask excluding singularity region."""
+        muscle_bool = muscle_mask > 0.5
+        muscle_values = target[muscle_bool]
+
+        if muscle_values.numel() == 0:
+            return muscle_mask
+
+        threshold = torch.quantile(torch.abs(muscle_values), self.singularity_percentile / 100.0)
+        singularity_mask = torch.abs(target) > threshold
+        valid_mask = muscle_bool & ~singularity_mask
+
+        return valid_mask.float()
+
+    def _normalize_target(
+        self,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Normalize target by valid-region statistics."""
+        valid_bool = valid_mask > 0.5
+        valid_values = target[valid_bool]
+
+        if valid_values.numel() == 0:
+            mean = target.mean()
+            std = target.std()
+        else:
+            mean = valid_values.mean()
+            std = valid_values.std()
+
+        std = torch.clamp(std, min=1e-8)
+        target_normalized = (target - mean) / std
+
+        return target_normalized, mean, std
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Load a single sample."""
         data = np.load(self.sample_files[idx])
@@ -470,10 +601,19 @@ class CombinedPotentialFieldDataset(Dataset):
 
         sigma = torch.from_numpy(sigma).permute(3, 0, 1, 2).float()
         source = torch.from_numpy(source).unsqueeze(0).float()
-        mask = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0)
+        muscle_mask = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0)
         target = torch.from_numpy(u).unsqueeze(0).float()
         spacing_tensor = torch.from_numpy(spacing).float()
         source_point_tensor = torch.from_numpy(source_point).float()
+
+        # Create valid mask (muscle excluding singularity)
+        valid_mask = self._create_valid_mask(target, muscle_mask)
+
+        # Optionally normalize target
+        target_mean = torch.tensor(0.0)
+        target_std = torch.tensor(1.0)
+        if self.normalize_target:
+            target, target_mean, target_std = self._normalize_target(target, valid_mask)
 
         grid_shape = sigma.shape[1:]
         coords = self._generate_coords(grid_shape)
@@ -483,9 +623,12 @@ class CombinedPotentialFieldDataset(Dataset):
             'source': source,
             'coords': coords,
             'spacing': spacing_tensor,
-            'mask': mask,
+            'mask': muscle_mask,
+            'valid_mask': valid_mask,
             'target': target,
             'source_point': source_point_tensor,
+            'target_mean': target_mean,
+            'target_std': target_std,
         }
 
         if self.add_spacing_channels:
@@ -528,6 +671,10 @@ def get_dataloaders(
     # Analytical solution option
     add_analytical_solution = config.get('model', {}).get('add_analytical_solution', False)
 
+    # Normalization options
+    normalize_target = data_config.get('normalize_target', False)
+    singularity_percentile = data_config.get('singularity_percentile', 99.0)
+
     # Exclusion list (optional)
     exclusion_file = data_config.get('exclusion_file', None)
 
@@ -549,18 +696,24 @@ def get_dataloaders(
             samples=splits['train'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
 
         val_dataset = CombinedPotentialFieldDataset(
             samples=splits['val'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
 
         test_dataset = CombinedPotentialFieldDataset(
             samples=splits['test'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
     else:
         # Use single directory (original behavior)
@@ -578,6 +731,8 @@ def get_dataloaders(
             sample_indices=train_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
 
         val_dataset = PotentialFieldDataset(
@@ -585,6 +740,8 @@ def get_dataloaders(
             sample_indices=val_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
 
         test_dataset = PotentialFieldDataset(
@@ -592,6 +749,8 @@ def get_dataloaders(
             sample_indices=test_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            normalize_target=normalize_target,
+            singularity_percentile=singularity_percentile,
         )
 
     # Create dataloaders

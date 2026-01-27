@@ -14,11 +14,81 @@ I have added data so there are now 500 samples of 48x48x96 within `data` and 500
 - ✓ Spacing transform ablations (log, normalized - neither helped)
 - ✓ Residual learning ablation (didn't help)
 - ✓ Option 4 vs 5 comparison (no spacing ± analytical)
+- ✓ Neural operator architecture comparison (TFNO, U-NO, DeepONet, LSM vs FNO)
 
 **REMAINING IDEAS:**
 1. Multi-Task Learning: Add auxiliary losses (boundary conditions)
 2. Data Augmentation: Random crops, flips, rotations (respecting physics symmetries)
 3. Uncertainty Quantification: Ensemble methods or MC dropout for confidence estimates
+
+---
+
+## Neural Operator Architecture Comparison
+
+Compared 5 different neural operator architectures on the 501-sample dataset with analytical solution input.
+
+### Available Architectures
+
+| Model | Description | Parameters | Key Characteristics |
+|-------|-------------|------------|---------------------|
+| **FNO** | Fourier Neural Operator | 12.7M | Spectral convolutions in Fourier space |
+| **TFNO** | FNO + Instance Normalization | 12.7M | Added normalization for training stability |
+| **U-NO** | U-shaped Neural Operator | 24.4M | Multi-scale + spectral convolutions |
+| **DeepONet** | Deep Operator Network | 12.0M | Branch-trunk architecture |
+| **LSM** | Latent Spectral Model | 5.1M | Latent space with spectral processing |
+
+### Results
+
+| Rank | Model | Test Rel L2 | L2 Norm Ratio | Grad Energy | Laplacian | Params |
+|------|-------|-------------|---------------|-------------|-----------|--------|
+| **1** | **TFNO** | **0.186** | 0.96 | **1.00** | 1.83 | 12.7M |
+| 2 | LSM | 0.189 | 0.94 | 1.09 | 3.12 | **5.1M** |
+| 3 | U-NO | 0.237 | **1.00** | 1.51 | 3.82 | 24.4M |
+| 4 | FNO | 0.255 | 1.06 | 1.09 | **1.31** | 12.7M |
+| 5 | DeepONet | 0.854 | 0.99 | 1.22 | 4.76 | 12.0M |
+
+### Key Findings
+
+1. **TFNO is best overall** with Test Rel L2 = 0.186 and perfect gradient energy ratio (1.00)
+   - Instance normalization improves training stability and final accuracy
+   - Same parameter count as FNO
+
+2. **LSM is most parameter-efficient** - achieves 0.189 with only 5.1M parameters (60% reduction)
+   - Latent space approach captures global patterns efficiently
+   - Good choice when memory is constrained
+
+3. **U-NO has best scale accuracy** (L2 Norm Ratio = 1.00)
+   - Multi-scale architecture helps with scale preservation
+   - But noisier predictions (higher Laplacian ratio)
+
+4. **FNO has smoothest predictions** (Laplacian = 1.31)
+   - Standard spectral convolutions produce smooth outputs
+   - But slightly worse accuracy in this comparison
+
+5. **DeepONet struggles** on this problem (Rel L2 = 0.854)
+   - Branch-trunk architecture not well-suited for dense 3D field prediction
+   - Better for point-wise queries than full field prediction
+
+### Usage
+
+```bash
+# Run with different backbones
+python scripts/main.py --config configs/neural_operators/config_tfno.yaml --experiment-name tfno_test
+python scripts/main.py --config configs/neural_operators/config_lsm.yaml --experiment-name lsm_test
+python scripts/main.py --config configs/neural_operators/config_uno.yaml --experiment-name uno_test
+
+# Or use the comparison script
+python scripts/run_neural_operator_comparison.py --operators tfno lsm uno fno deeponet
+```
+
+### Files Added
+
+- `src/models/tfno.py` - Factorized FNO with instance normalization
+- `src/models/uno.py` - U-shaped Neural Operator
+- `src/models/deeponet.py` - Deep Operator Network
+- `src/models/lsm.py` - Latent Spectral Model
+- `scripts/run_neural_operator_comparison.py` - Comparison script
+- `configs/neural_operators/` - Config files for each architecture
 
 ---
 
@@ -122,6 +192,9 @@ python scripts/run_ablation.py --base-config configs/config_combined.yaml --expe
 - **For best super-resolution (with high-res data)**: Use `mixed_res_layers6_analytical`
   - Super-res Rel L2 = 0.110 (best overall)
 - **For smoothest predictions**: Use `grad_match_0.1_layers6_analytical` (Laplacian = 0.97 at base)
+- **Alternative architectures**:
+  - **TFNO** (Test Rel L2 = 0.186): Best alternative with perfect gradient matching
+  - **LSM** (Test Rel L2 = 0.189): Most parameter-efficient (5.1M vs 12.7M)
 
 ### Why Gradient Matching Helps Super-Resolution
 
@@ -184,6 +257,47 @@ Also log:
 ## Diagnosis Targets (what "noise" and "scale off" mean)
 - Noise problem: pred has higher high-frequency content than GT (gradient/Laplacian ratios >> 1)
 - Scale problem: L2 norm ratio far from 1 even when correlation/shape is reasonable
+
+---
+
+## Ground Truth Data Quality: FEM Numerical Noise
+
+**Important finding**: The ground truth FEM simulation data contains numerical noise in regions **outside the muscle mask** that are far from the current source. This noise does NOT affect training or evaluation when using the muscle mask.
+
+### Analysis Summary
+
+| Fiber Position | Mask Status | Signal Range | Roughness Ratio | Quality |
+|----------------|-------------|--------------|-----------------|---------|
+| At source | IN muscle | 2.316 | 57.4 | Clean |
+| h±10 from source | OUTSIDE | 0.04 | 95-117 | Clean |
+| Volume center | IN muscle | 0.0015 | 674.9 | Very clean |
+| **Corner (5,5,5)** | **OUTSIDE** | **0.0006** | **3.9** | **Noisy** |
+
+### Explanation
+
+- The FEM solver focuses numerical accuracy on the **muscle region** (mask=1, 78% of volume)
+- **Inside muscle**: All regions are clean, even far from source (roughness ratio 675)
+- **Outside muscle, near source**: Still decent quality (roughness ratio 95-117)
+- **Outside muscle, far from source**: This is where noise appears (roughness ratio 3.9)
+
+The noise is in regions that are:
+1. Outside the muscle mask (not the region of physical interest)
+2. Far from the current source (very weak signal)
+
+### Implications
+
+1. **Training unaffected**: The loss function uses the muscle mask, so noisy outside regions don't affect training
+2. **Evaluation reliable**: Metrics computed on the muscle region are reliable
+3. **Fiber visualizations**: Some fibers passing through corners/edges may show noisy GT - this is expected for outside-muscle regions
+4. **Not a bug**: This is intentional FEM solver behavior focusing accuracy where it matters
+
+### Visualization
+
+Fiber potential plots (1D cross-sections along Z-axis) show this effect:
+- Fibers through/near source (inside muscle): Clean, smooth curves
+- Fibers in corners (outside muscle): Noisy GT - this is expected and doesn't affect model quality
+
+See: `visualizations/fiber_potentials/` and `visualizations/fiber_distance_comparison.png`
 
 ---
 

@@ -2,11 +2,15 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from .geometry import CombinedEncoder
 from .unet import UNetBackbone
 from .fno import FNOBackbone
+from .tfno import TFNOBackbone
+from .uno import UNOBackbone
+from .deeponet import DeepONetBackbone
+from .lsm import LSMBackbone
 
 
 class PotentialFieldModel(nn.Module):
@@ -15,7 +19,7 @@ class PotentialFieldModel(nn.Module):
     Combines:
     1. CombinedEncoder: Processes conductivity, source, and coordinates
        with additive spacing conditioning
-    2. Backbone: Either UNet or FNO for predicting the potential field
+    2. Backbone: FNO, TFNO, U-NO, DeepONet, LSM, or UNet for predicting the potential field
     """
 
     def __init__(
@@ -29,13 +33,16 @@ class PotentialFieldModel(nn.Module):
         geometry_num_layers: int = 2,
         unet_config: Optional[Dict] = None,
         fno_config: Optional[Dict] = None,
+        uno_config: Optional[Dict] = None,
+        deeponet_config: Optional[Dict] = None,
+        lsm_config: Optional[Dict] = None,
         add_analytical_solution: bool = False,
         use_spacing_conditioning: bool = True,
     ):
         """Initialize the potential field model.
 
         Args:
-            backbone_type: Type of backbone ("unet" or "fno")
+            backbone_type: Type of backbone ("unet", "fno", "tfno", "uno", "deeponet", "lsm")
             sigma_channels: Number of conductivity channels (6 for symmetric tensor)
             source_channels: Number of source field channels
             coord_channels: Number of coordinate channels (3 for X, Y, Z)
@@ -43,7 +50,10 @@ class PotentialFieldModel(nn.Module):
             geometry_hidden_dim: Hidden dimension for geometry encoder
             geometry_num_layers: Number of layers in geometry encoder
             unet_config: Configuration dict for UNet backbone
-            fno_config: Configuration dict for FNO backbone
+            fno_config: Configuration dict for FNO/TFNO backbone
+            uno_config: Configuration dict for U-NO backbone
+            deeponet_config: Configuration dict for DeepONet backbone
+            lsm_config: Configuration dict for LSM backbone
             add_analytical_solution: If True, expect analytical solution as extra input
             use_spacing_conditioning: If True, apply spacing-based conditioning
         """
@@ -87,11 +97,57 @@ class PotentialFieldModel(nn.Module):
                 modes2=fno_config.get("modes2", 8),
                 modes3=fno_config.get("modes3", 8),
                 width=fno_config.get("width", 32),
-                num_layers=fno_config.get("num_layers", 6),  # Default to 6 layers (best)
+                num_layers=fno_config.get("num_layers", 6),
                 fc_dim=fno_config.get("fc_dim", 128),
             )
+        elif self.backbone_type == "tfno":
+            fno_config = fno_config or {}
+            self.backbone = TFNOBackbone(
+                in_channels=encoder_out_channels,
+                out_channels=out_channels,
+                modes1=fno_config.get("modes1", 8),
+                modes2=fno_config.get("modes2", 8),
+                modes3=fno_config.get("modes3", 8),
+                width=fno_config.get("width", 32),
+                num_layers=fno_config.get("num_layers", 6),
+                fc_dim=fno_config.get("fc_dim", 128),
+            )
+        elif self.backbone_type == "uno":
+            uno_config = uno_config or {}
+            self.backbone = UNOBackbone(
+                in_channels=encoder_out_channels,
+                out_channels=out_channels,
+                base_width=uno_config.get("base_width", 32),
+                depth=uno_config.get("depth", 3),
+                base_modes=uno_config.get("base_modes", 8),
+                fc_dim=uno_config.get("fc_dim", 128),
+            )
+        elif self.backbone_type == "deeponet":
+            deeponet_config = deeponet_config or {}
+            self.backbone = DeepONetBackbone(
+                in_channels=encoder_out_channels,
+                out_channels=out_channels,
+                hidden_dim=deeponet_config.get("hidden_dim", 128),
+                num_basis=deeponet_config.get("num_basis", 64),
+                branch_layers=deeponet_config.get("branch_layers", 4),
+                trunk_layers=deeponet_config.get("trunk_layers", 4),
+            )
+        elif self.backbone_type == "lsm":
+            lsm_config = lsm_config or {}
+            self.backbone = LSMBackbone(
+                in_channels=encoder_out_channels,
+                out_channels=out_channels,
+                latent_dim=lsm_config.get("latent_dim", 32),
+                latent_resolution=tuple(lsm_config.get("latent_resolution", [12, 6, 6])),
+                num_layers=lsm_config.get("num_layers", 4),
+                hidden_dim=lsm_config.get("hidden_dim", 64),
+                latent_modes=tuple(lsm_config.get("latent_modes", [6, 3, 3])),
+            )
         else:
-            raise ValueError(f"Unknown backbone type: {backbone_type}. Must be 'unet' or 'fno'.")
+            raise ValueError(
+                f"Unknown backbone type: {backbone_type}. "
+                "Must be 'unet', 'fno', 'tfno', 'uno', 'deeponet', or 'lsm'."
+            )
 
     def forward(
         self,
@@ -149,6 +205,9 @@ def build_model(config: Dict) -> PotentialFieldModel:
     # Backbone configs
     unet_config = model_config.get("unet", {})
     fno_config = model_config.get("fno", {})
+    uno_config = model_config.get("uno", {})
+    deeponet_config = model_config.get("deeponet", {})
+    lsm_config = model_config.get("lsm", {})
 
     # Analytical solution option
     add_analytical_solution = model_config.get("add_analytical_solution", False)
@@ -166,6 +225,9 @@ def build_model(config: Dict) -> PotentialFieldModel:
         geometry_num_layers=geometry_num_layers,
         unet_config=unet_config,
         fno_config=fno_config,
+        uno_config=uno_config,
+        deeponet_config=deeponet_config,
+        lsm_config=lsm_config,
         add_analytical_solution=add_analytical_solution,
         use_spacing_conditioning=use_spacing_conditioning,
     )
