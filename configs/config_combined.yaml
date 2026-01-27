@@ -1,12 +1,13 @@
 # Configuration for combined dataset (901 samples)
 # 501 original low-res + 400 downsampled high-res samples
+#
+# Best model: layers6_analytical (Rel L2 = 0.118)
 
 data:
-  # Use multiple data directories
   data_dirs:
-    - data                    # 501 original 48x48x96 samples
+    - data                      # 501 original 48x48x96 samples
     - data/downsampled_highres  # 400 downsampled high-res samples
-  data_dir: data  # Fallback (not used when data_dirs is set)
+  data_dir: data  # Fallback
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
@@ -16,7 +17,7 @@ data:
 
 model:
   backbone: fno
-  add_analytical_solution: false  # Enable for analytical solution experiments
+  add_analytical_solution: true  # Recommended
   geometry_encoder:
     enabled: true
     hidden_dim: 64
@@ -26,7 +27,7 @@ model:
     modes2: 8
     modes3: 8
     width: 32
-    num_layers: 4
+    num_layers: 6  # Best: 6 layers
     fc_dim: 128
 
 training:
@@ -37,9 +38,6 @@ training:
   scheduler_params:
     T_max: 100
     eta_min: 0.000001
-  loss_weights:
-    mse: 1.0
-    pde: 0.5
   checkpoint_dir: checkpoints
   checkpoint_freq: 10
   resume_from: null
@@ -47,11 +45,12 @@ training:
   early_stopping_delta: 0.000001
 
 loss:
-  type: mse
   pde_weight: 0.0
-  spectral_weight: 0.0
-  spectral_mode: threshold
   tv_weight: 0.01
+  gradient_matching_weight: 0.0
+
+spacing:
+  use_spacing_conditioning: true
 
 experiment:
   use_singularity_mask: true
@@ -78,7 +77,7 @@ logging:
   use_tensorboard: true
   log_dir: logs
   project_name: neural-operator-3d
-  experiment_name: combined_901_samples
+  experiment_name: combined_dataset
   vis_freq: 10
   vis_slices: [axial, sagittal]
   vis_dir: visualizations

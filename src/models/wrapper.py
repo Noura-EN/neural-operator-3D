@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Union
+from typing import Dict, Optional
 
 from .geometry import CombinedEncoder
 from .unet import UNetBackbone
@@ -31,9 +31,6 @@ class PotentialFieldModel(nn.Module):
         fno_config: Optional[Dict] = None,
         add_analytical_solution: bool = False,
         use_spacing_conditioning: bool = True,
-        spacing_transform: str = "none",
-        reference_spacing: float = 2.0,
-        residual_learning: bool = False,
     ):
         """Initialize the potential field model.
 
@@ -49,20 +46,12 @@ class PotentialFieldModel(nn.Module):
             fno_config: Configuration dict for FNO backbone
             add_analytical_solution: If True, expect analytical solution as extra input
             use_spacing_conditioning: If True, apply spacing-based conditioning
-            spacing_transform: Transform for spacing ("none", "log", "normalized")
-            reference_spacing: Reference spacing for normalization (default: 2.0mm)
-            residual_learning: If True, predict (u - analytical) and add analytical back
         """
         super().__init__()
 
         self.backbone_type = backbone_type.lower()
         self.add_analytical_solution = add_analytical_solution
         self.use_spacing_conditioning = use_spacing_conditioning
-        self.residual_learning = residual_learning
-
-        # Residual learning requires analytical solution
-        if residual_learning and not add_analytical_solution:
-            raise ValueError("Residual learning requires add_analytical_solution=True")
 
         # If using analytical solution, increase source channels
         effective_source_channels = source_channels + (1 if add_analytical_solution else 0)
@@ -77,8 +66,6 @@ class PotentialFieldModel(nn.Module):
             geometry_num_layers=geometry_num_layers,
             out_channels=encoder_out_channels,
             use_spacing_conditioning=use_spacing_conditioning,
-            spacing_transform=spacing_transform,
-            reference_spacing=reference_spacing,
         )
 
         # Initialize backbone based on type
@@ -100,7 +87,7 @@ class PotentialFieldModel(nn.Module):
                 modes2=fno_config.get("modes2", 8),
                 modes3=fno_config.get("modes3", 8),
                 width=fno_config.get("width", 32),
-                num_layers=fno_config.get("num_layers", 4),
+                num_layers=fno_config.get("num_layers", 6),  # Default to 6 layers (best)
                 fc_dim=fno_config.get("fc_dim", 128),
             )
         else:
@@ -135,12 +122,8 @@ class PotentialFieldModel(nn.Module):
         # Encode inputs
         features = self.encoder(sigma, source, coords, spacing)
 
-        # Predict potential (or residual if residual_learning is enabled)
+        # Predict potential
         output = self.backbone(features)
-
-        # If residual learning, add analytical solution back
-        if self.residual_learning and analytical is not None:
-            output = output + analytical
 
         return output
 
@@ -170,14 +153,8 @@ def build_model(config: Dict) -> PotentialFieldModel:
     # Analytical solution option
     add_analytical_solution = model_config.get("add_analytical_solution", False)
 
-    # Residual learning option
-    residual_learning = model_config.get("residual_learning", False)
-
-    # Spacing conditioning options (defaults to True for backward compatibility)
-    spacing_config = config.get("spacing", {})
-    use_spacing_conditioning = spacing_config.get("use_spacing_conditioning", True)
-    spacing_transform = spacing_config.get("spacing_transform", "none")
-    reference_spacing = spacing_config.get("reference_spacing", 2.0)
+    # Spacing conditioning (defaults to True - the best approach)
+    use_spacing_conditioning = config.get("spacing", {}).get("use_spacing_conditioning", True)
 
     model = PotentialFieldModel(
         backbone_type=backbone_type,
@@ -191,9 +168,6 @@ def build_model(config: Dict) -> PotentialFieldModel:
         fno_config=fno_config,
         add_analytical_solution=add_analytical_solution,
         use_spacing_conditioning=use_spacing_conditioning,
-        spacing_transform=spacing_transform,
-        reference_spacing=reference_spacing,
-        residual_learning=residual_learning,
     )
 
     return model

@@ -1,8 +1,13 @@
 # Default configuration for 3D potential field prediction
-# Optimized based on ablation studies - see CLAUDE.md for details
+# Best parameters based on ablation studies - see CLAUDE.md for details
+#
+# Best model: layers6_analytical (Rel L2 = 0.118)
+# - FNO with 6 layers + analytical monopole solution as input
+# - Additive spacing conditioning
+# - TV regularization
 
 data:
-  data_dir: data  # 352 samples (v1_medium dataset)
+  data_dir: data
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
@@ -11,18 +16,23 @@ data:
   pin_memory: true
 
 model:
-  backbone: fno
+  backbone: fno  # Options: "fno", "unet"
+  add_analytical_solution: true  # Add monopole analytical solution as input (recommended)
   geometry_encoder:
     enabled: true
     hidden_dim: 64
     num_layers: 2
   fno:
-    modes1: 8  # Optimal - more doesn't help with 100 samples
+    modes1: 8
     modes2: 8
     modes3: 8
-    width: 32  # Optimal - wider doesn't help
-    num_layers: 4
+    width: 32
+    num_layers: 6  # Best: 6 layers
     fc_dim: 128
+  unet:
+    base_channels: 32
+    depth: 4
+    dropout: 0.1
 
 training:
   epochs: 100
@@ -32,9 +42,6 @@ training:
   scheduler_params:
     T_max: 100
     eta_min: 0.000001
-  loss_weights:
-    mse: 1.0
-    pde: 0.5  # Gradient consistency weight (optimal: 0.5)
   checkpoint_dir: checkpoints
   checkpoint_freq: 10
   resume_from: null
@@ -42,12 +49,15 @@ training:
   early_stopping_delta: 0.000001
 
 # Loss function configuration
+# Available: MSE + gradient consistency + TV + PDE residual + gradient matching
 loss:
-  type: mse  # Best for accuracy
-  pde_weight: 0.0  # True PDE residual - not helpful
-  spectral_weight: 0.0  # Spectral smoothing - not helpful
-  spectral_mode: threshold
-  tv_weight: 0.01  # Total variation - helps with noise reduction
+  pde_weight: 0.0  # PDE residual loss (optional)
+  tv_weight: 0.01  # Total variation regularizer (recommended for smoothness)
+  gradient_matching_weight: 0.0  # Gradient matching (use 0.1 for better super-res)
+
+# Spacing conditioning (uses additive mode - the best approach)
+spacing:
+  use_spacing_conditioning: true  # Recommended: true
 
 # Experiment settings
 experiment:
@@ -57,7 +67,7 @@ grid:
   base_resolution: [96, 48, 48]
   train_resolution: [96, 48, 48]
   test_resolution: [96, 48, 48]
-  coord_range: [-1.0, 1.0]  # Normalized coordinates (optimal)
+  coord_range: [-1.0, 1.0]
   log_conductivity: false
   conductivity_epsilon: 0.000001
 

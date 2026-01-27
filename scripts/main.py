@@ -394,21 +394,17 @@ def main():
 
     criterion = CombinedLoss(
         mse_weight=loss_weights.get('mse', 1.0),
-        grad_weight=loss_weights.get('pde', 0.5),  # Best found: 0.5
+        grad_weight=loss_weights.get('pde', 0.5),
         singularity_radius=mse_config.get('singularity_mask_radius', 3),
-        loss_type=loss_config.get('type', 'mse'),
         pde_weight=loss_config.get('pde_weight', 0.0),
-        spectral_weight=loss_config.get('spectral_weight', 0.0),
-        spectral_mode=loss_config.get('spectral_mode', 'threshold'),
+        tv_weight=loss_config.get('tv_weight', 0.01),
+        gradient_matching_weight=loss_config.get('gradient_matching_weight', 0.0),
         use_singularity_mask=use_singularity_mask,
-        logcosh_weight=loss_config.get('logcosh_weight', 0.0),
-        tv_weight=loss_config.get('tv_weight', 0.01),  # Default on for noise reduction
     )
 
     # Log loss configuration
-    print(f"Loss config: type={loss_config.get('type', 'mse')}, "
-          f"logcosh_weight={loss_config.get('logcosh_weight', 0.0)}, "
-          f"tv_weight={loss_config.get('tv_weight', 0.01)}, "
+    print(f"Loss config: tv_weight={loss_config.get('tv_weight', 0.01)}, "
+          f"gradient_matching_weight={loss_config.get('gradient_matching_weight', 0.0)}, "
           f"use_singularity_mask={use_singularity_mask}")
 
     # Setup TensorBoard writer
