@@ -9,6 +9,25 @@ import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 
 
+def log_transform(x: torch.Tensor) -> torch.Tensor:
+    """Apply signed log transform to compress dynamic range.
+
+    Transform: sign(x) * log(1 + |x|)
+
+    This compresses the range from [~10^-5, ~10^1] to [~0, ~2.4]
+    while preserving sign information.
+    """
+    return torch.sign(x) * torch.log1p(torch.abs(x))
+
+
+def inverse_log_transform(x: torch.Tensor) -> torch.Tensor:
+    """Inverse of log_transform.
+
+    Transform: sign(x) * (exp(|x|) - 1)
+    """
+    return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
+
+
 def load_exclusion_list(exclusion_file: Union[str, Path]) -> Set[str]:
     """Load list of sample filenames to exclude.
 
@@ -55,6 +74,7 @@ class PotentialFieldDataset(Dataset):
         add_analytical_solution: bool = False,
         normalize_target: bool = False,
         singularity_percentile: float = 99.0,
+        log_transform_target: bool = False,
     ):
         """Initialize dataset.
 
@@ -66,6 +86,7 @@ class PotentialFieldDataset(Dataset):
             add_analytical_solution: If True, compute and add monopole analytical solution
             normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
             singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
+            log_transform_target: If True, apply signed log transform to compress dynamic range
         """
         self.data_dir = Path(data_dir)
         self.device = device
@@ -73,6 +94,7 @@ class PotentialFieldDataset(Dataset):
         self.add_analytical_solution = add_analytical_solution
         self.normalize_target = normalize_target
         self.singularity_percentile = singularity_percentile
+        self.log_transform_target = log_transform_target
 
         # Find all sample files
         all_files = sorted(self.data_dir.glob("sample_*.npz"))
@@ -283,6 +305,10 @@ class PotentialFieldDataset(Dataset):
         if self.normalize_target:
             target, target_mean, target_std = self._normalize_target(target, valid_mask)
 
+        # Optionally apply log transform to compress dynamic range
+        if self.log_transform_target:
+            target = log_transform(target)
+
         # Generate normalized coordinates [-1, 1]
         grid_shape = sigma.shape[1:]  # (D, H, W)
         coords = self._generate_coords(grid_shape)
@@ -298,6 +324,7 @@ class PotentialFieldDataset(Dataset):
             'source_point': source_point,
             'target_mean': target_mean,
             'target_std': target_std,
+            'log_transformed': torch.tensor(self.log_transform_target),
         }
 
         # Optionally add spacing as explicit channels
@@ -474,6 +501,7 @@ class CombinedPotentialFieldDataset(Dataset):
         add_analytical_solution: bool = False,
         normalize_target: bool = False,
         singularity_percentile: float = 99.0,
+        log_transform_target: bool = False,
     ):
         """Initialize combined dataset.
 
@@ -483,12 +511,14 @@ class CombinedPotentialFieldDataset(Dataset):
             add_analytical_solution: If True, add monopole analytical solution
             normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
             singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
+            log_transform_target: If True, apply signed log transform to compress dynamic range
         """
         self.samples = samples
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
         self.normalize_target = normalize_target
         self.singularity_percentile = singularity_percentile
+        self.log_transform_target = log_transform_target
 
         # Build file list
         self.sample_files = []
@@ -615,6 +645,10 @@ class CombinedPotentialFieldDataset(Dataset):
         if self.normalize_target:
             target, target_mean, target_std = self._normalize_target(target, valid_mask)
 
+        # Optionally apply log transform to compress dynamic range
+        if self.log_transform_target:
+            target = log_transform(target)
+
         grid_shape = sigma.shape[1:]
         coords = self._generate_coords(grid_shape)
 
@@ -629,6 +663,7 @@ class CombinedPotentialFieldDataset(Dataset):
             'source_point': source_point_tensor,
             'target_mean': target_mean,
             'target_std': target_std,
+            'log_transformed': torch.tensor(self.log_transform_target),
         }
 
         if self.add_spacing_channels:
@@ -674,6 +709,7 @@ def get_dataloaders(
     # Normalization options
     normalize_target = data_config.get('normalize_target', False)
     singularity_percentile = data_config.get('singularity_percentile', 99.0)
+    log_transform_target = data_config.get('log_transform_target', False)
 
     # Exclusion list (optional)
     exclusion_file = data_config.get('exclusion_file', None)
@@ -698,6 +734,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
 
         val_dataset = CombinedPotentialFieldDataset(
@@ -706,6 +743,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
 
         test_dataset = CombinedPotentialFieldDataset(
@@ -714,6 +752,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
     else:
         # Use single directory (original behavior)
@@ -733,6 +772,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
 
         val_dataset = PotentialFieldDataset(
@@ -742,6 +782,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
 
         test_dataset = PotentialFieldDataset(
@@ -751,6 +792,7 @@ def get_dataloaders(
             add_analytical_solution=add_analytical_solution,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
+            log_transform_target=log_transform_target,
         )
 
     # Create dataloaders

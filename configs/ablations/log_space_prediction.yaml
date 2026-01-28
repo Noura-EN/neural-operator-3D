@@ -1,0 +1,68 @@
+# Log-space prediction: compress dynamic range via signed log transform
+# Target transform: sign(x) * log(1 + |x|)
+# Inverse at eval: sign(x) * (exp(|x|) - 1)
+#
+# Hypothesis: Compressing 10^-5 to 10^1 range into ~0 to ~2.4 should
+# give far-from-source regions more learning signal.
+
+data:
+  data_dirs:
+    - data                      # 501 original 48x48x96 samples
+    - data/downsampled_highres  # 400 downsampled high-res samples
+  data_dir: data  # Fallback
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+  log_transform_target: true  # KEY: Enable log-space prediction
+
+model:
+  backbone: fno
+  add_analytical_solution: true
+  geometry_encoder:
+    enabled: true
+    hidden_dim: 64
+    num_layers: 2
+  fno:
+    modes1: 8
+    modes2: 8
+    modes3: 8
+    width: 32
+    num_layers: 6
+    fc_dim: 128
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler: cosine
+  scheduler_params:
+    T_max: 100
+    eta_min: 0.000001
+  checkpoint_dir: checkpoints
+  checkpoint_freq: 10
+  early_stopping_patience: 10
+  early_stopping_delta: 0.000001
+
+loss:
+  pde_weight: 0.0
+  tv_weight: 0.01
+  gradient_matching_weight: 0.0
+
+spacing:
+  use_spacing_conditioning: true
+
+experiment:
+  use_singularity_mask: true
+
+physics:
+  mse:
+    singularity_mask_radius: 3
+
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: logs
+  experiment_name: log_space_prediction

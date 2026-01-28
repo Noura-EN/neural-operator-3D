@@ -414,11 +414,23 @@ class TotalVariationLoss(nn.Module):
         pred: torch.Tensor,
         source: torch.Tensor,
         source_point: Optional[torch.Tensor] = None,
+        external_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Compute total variation loss."""
+        """Compute total variation loss.
+
+        Args:
+            pred: Predicted field (B, 1, D, H, W)
+            source: Source field (B, 1, D, H, W)
+            source_point: Optional source location
+            external_mask: Optional external mask (e.g., muscle mask) to apply
+        """
         # Exclude singularity region
         sing_mask = create_singularity_mask(source, self.singularity_radius, source_point)
         valid_mask = 1 - sing_mask
+
+        # Combine with external mask if provided
+        if external_mask is not None:
+            valid_mask = valid_mask * external_mask
 
         # Compute differences along each axis
         diff_z = torch.abs(pred[:, :, 1:, :, :] - pred[:, :, :-1, :, :])
@@ -514,6 +526,80 @@ class GradientMatchingLoss(nn.Module):
         return self.weight * (total_loss / B)
 
 
+class LaplacianMatchingLoss(nn.Module):
+    """Laplacian matching loss: MSE between predicted and target Laplacians.
+
+    Loss = weight * MSE(laplacian(pred), laplacian(target))
+
+    This encourages the model to match the second-derivative structure,
+    which is important for physics (Laplacian appears in the PDE).
+    """
+
+    def __init__(self, weight: float = 0.1, singularity_radius: int = 5):
+        super().__init__()
+        self.weight = weight
+        self.singularity_radius = singularity_radius
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        source: torch.Tensor,
+        spacing: torch.Tensor,
+        source_point: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute Laplacian matching loss using finite differences."""
+        # Exclude singularity region (use larger radius for Laplacian)
+        sing_mask = create_singularity_mask(source, self.singularity_radius, source_point)
+        valid_mask = 1 - sing_mask
+
+        B = pred.shape[0]
+        total_loss = 0.0
+
+        for b in range(B):
+            p = pred[b, 0]  # (D, H, W)
+            t = target[b, 0]
+            m = valid_mask[b, 0]
+
+            dz = spacing[b, 0].item()
+            dy = spacing[b, 1].item()
+            dx = spacing[b, 2].item()
+
+            # Compute Laplacian using central differences: d2f/dx2 = (f[i+1] - 2*f[i] + f[i-1]) / dx^2
+            lap_p = torch.zeros_like(p)
+            lap_t = torch.zeros_like(t)
+
+            # Interior points only (need 2 neighbors in each direction)
+            lap_p[1:-1, 1:-1, 1:-1] = (
+                (p[2:, 1:-1, 1:-1] - 2*p[1:-1, 1:-1, 1:-1] + p[:-2, 1:-1, 1:-1]) / (dz**2) +
+                (p[1:-1, 2:, 1:-1] - 2*p[1:-1, 1:-1, 1:-1] + p[1:-1, :-2, 1:-1]) / (dy**2) +
+                (p[1:-1, 1:-1, 2:] - 2*p[1:-1, 1:-1, 1:-1] + p[1:-1, 1:-1, :-2]) / (dx**2)
+            )
+
+            lap_t[1:-1, 1:-1, 1:-1] = (
+                (t[2:, 1:-1, 1:-1] - 2*t[1:-1, 1:-1, 1:-1] + t[:-2, 1:-1, 1:-1]) / (dz**2) +
+                (t[1:-1, 2:, 1:-1] - 2*t[1:-1, 1:-1, 1:-1] + t[1:-1, :-2, 1:-1]) / (dy**2) +
+                (t[1:-1, 1:-1, 2:] - 2*t[1:-1, 1:-1, 1:-1] + t[1:-1, 1:-1, :-2]) / (dx**2)
+            )
+
+            # Create interior mask (exclude boundaries)
+            interior_mask = m.clone()
+            interior_mask[0] = 0
+            interior_mask[-1] = 0
+            interior_mask[:, 0] = 0
+            interior_mask[:, -1] = 0
+            interior_mask[:, :, 0] = 0
+            interior_mask[:, :, -1] = 0
+
+            # MSE between Laplacians
+            num_valid = interior_mask.sum() + 1e-8
+            loss = ((lap_p - lap_t) ** 2 * interior_mask).sum() / num_valid
+
+            total_loss += loss
+
+        return self.weight * (total_loss / B)
+
+
 class CombinedLoss(nn.Module):
     """Combined loss function for potential field prediction.
 
@@ -536,10 +622,12 @@ class CombinedLoss(nn.Module):
         pde_weight: float = 0.0,
         tv_weight: float = 0.01,
         gradient_matching_weight: float = 0.0,
+        laplacian_matching_weight: float = 0.0,
         use_singularity_mask: bool = True,
         singularity_mode: str = "radius",  # "radius" or "percentile"
         singularity_percentile: float = 99.0,  # Used if mode="percentile"
         distance_weight_alpha: float = 0.0,  # Distance weighting: 0=none, >0=upweight far
+        use_muscle_mask: bool = False,  # If True, compute loss only on muscle region
     ):
         """Initialize combined loss.
 
@@ -550,10 +638,12 @@ class CombinedLoss(nn.Module):
             pde_weight: Weight for PDE residual loss
             tv_weight: Weight for total variation regularizer
             gradient_matching_weight: Weight for gradient matching loss
+            laplacian_matching_weight: Weight for Laplacian matching loss (multi-task)
             use_singularity_mask: Whether to exclude singularity region
             singularity_mode: "radius" for fixed radius, "percentile" for value-based
             singularity_percentile: Percentile threshold if mode="percentile"
             distance_weight_alpha: Distance weighting factor (weight = 1 + alpha * normalized_dist)
+            use_muscle_mask: If True, compute loss only on muscle region (conductivity-based)
         """
         super().__init__()
 
@@ -562,6 +652,7 @@ class CombinedLoss(nn.Module):
         self.singularity_mode = singularity_mode
         self.singularity_percentile = singularity_percentile
         self.distance_weight_alpha = distance_weight_alpha
+        self.use_muscle_mask = use_muscle_mask
 
         # Primary MSE loss - we'll compute mask dynamically for percentile mode
         effective_radius = singularity_radius if (use_singularity_mask and singularity_mode == "radius") else 0
@@ -603,6 +694,15 @@ class CombinedLoss(nn.Module):
                 singularity_radius=singularity_radius,
             )
 
+        # Laplacian matching loss (multi-task learning)
+        self.laplacian_matching_loss = None
+        self.laplacian_matching_weight = laplacian_matching_weight
+        if laplacian_matching_weight > 0:
+            self.laplacian_matching_loss = LaplacianMatchingLoss(
+                weight=laplacian_matching_weight,
+                singularity_radius=singularity_radius + 2,  # Larger radius for stability
+            )
+
     def forward(
         self,
         pred: torch.Tensor,
@@ -617,29 +717,46 @@ class CombinedLoss(nn.Module):
         Returns:
             Tuple of (total_loss, loss_dict with individual components)
         """
-        # Compute singularity mask based on mode
+        # Compute masks based on configuration
+        # Start with all-ones mask (include everything)
+        mask = torch.ones_like(pred)
+
+        # Apply muscle mask if requested (only compute loss on muscle tissue)
+        if self.use_muscle_mask:
+            muscle_mask = create_muscle_mask(sigma)
+            mask = mask * muscle_mask
+
+        # Apply singularity mask if requested
         if self.use_singularity_mask:
             if self.singularity_mode == "percentile":
                 # Percentile-based mask: exclude top X% of absolute values
                 singularity_mask = create_percentile_singularity_mask(
                     target, sigma, self.singularity_percentile
                 )
-                mask = 1 - singularity_mask
-                # For percentile mode, compute MSE with custom mask
-                muscle_mask = create_muscle_mask(sigma)
-                valid_mask = muscle_mask * mask  # muscle AND NOT singularity
-                sq_diff = (pred - target) ** 2
-                if valid_mask.sum() > 0:
-                    primary = self.mse_weight * (sq_diff * valid_mask).sum() / valid_mask.sum()
-                else:
-                    primary = self.mse_weight * sq_diff.mean()
             else:
-                # Radius-based mask (original behavior)
+                # Radius-based mask (default)
                 singularity_mask = create_singularity_mask(source, self.singularity_radius, source_point)
-                mask = 1 - singularity_mask
-                primary = self.primary_loss(pred, target, sigma, source, source_point)
+            mask = mask * (1 - singularity_mask)  # Exclude singularity region
+
+        # Compute primary MSE loss with combined mask
+        if self.use_muscle_mask or (self.use_singularity_mask and self.singularity_mode == "percentile"):
+            # Custom masked MSE computation
+            sq_diff = (pred - target) ** 2
+            if mask.sum() > 0:
+                # Apply distance weighting if enabled
+                if self.distance_weight_alpha > 0:
+                    dist_weights = compute_distance_weights(
+                        source, pred.shape[2:], source_point,
+                        alpha=self.distance_weight_alpha, normalize=True
+                    )
+                    combined_weights = mask * dist_weights
+                else:
+                    combined_weights = mask
+                primary = self.mse_weight * (sq_diff * combined_weights).sum() / (combined_weights.sum() + 1e-8)
+            else:
+                primary = self.mse_weight * sq_diff.mean()
         else:
-            mask = None
+            # Use standard WeightedMaskedMSELoss (singularity radius only)
             primary = self.primary_loss(pred, target, sigma, source, source_point)
 
         # Gradient consistency loss
@@ -660,7 +777,9 @@ class CombinedLoss(nn.Module):
 
         # Total variation regularizer
         if self.tv_loss is not None:
-            tv = self.tv_loss(pred, source, source_point)
+            # Pass muscle mask to TV loss if using muscle masking
+            muscle_mask_for_tv = create_muscle_mask(sigma) if self.use_muscle_mask else None
+            tv = self.tv_loss(pred, source, source_point, external_mask=muscle_mask_for_tv)
             total_loss = total_loss + tv
             loss_dict["tv_loss"] = tv.item()
 
@@ -669,6 +788,12 @@ class CombinedLoss(nn.Module):
             grad_match = self.gradient_matching_loss(pred, target, source, spacing, source_point)
             total_loss = total_loss + grad_match
             loss_dict["gradient_matching_loss"] = grad_match.item()
+
+        # Laplacian matching loss (multi-task learning)
+        if self.laplacian_matching_loss is not None:
+            lap_match = self.laplacian_matching_loss(pred, target, source, spacing, source_point)
+            total_loss = total_loss + lap_match
+            loss_dict["laplacian_matching_loss"] = lap_match.item()
 
         loss_dict["loss"] = total_loss.item()
 

@@ -27,6 +27,13 @@ The goal is to predict 3D potential fields (φ) from conductivity tensors (σ) a
 - Model must generalize across different muscle geometries and source locations
 - Far-from-source regions are harder to predict accurately due to smaller signal magnitudes
 
+Every approach that attempts to improve far-region learning makes far-region performance WORSE.                                                                  
+                                                                                                                                                                  
+Why? The Hypothesis                                                                                                                                              
+                                                                                                                                                                  
+The model seems to learn the far-field structure from the near-field structure. The potential field is physically smooth and continuous - learning the strong    
+gradients near the source helps the model understand the global field topology, which then informs far-region predictions.
+
 ---
 
 ## Data Processing Pipeline

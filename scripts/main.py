@@ -28,7 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data.loader import get_dataloaders
+from src.data.loader import get_dataloaders, inverse_log_transform
 from src.models.wrapper import build_model, get_device, count_parameters
 from src.utils.masking import CombinedLoss, create_combined_mask
 from src.utils.metrics import (
@@ -210,8 +210,17 @@ def validate(
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing, source_point)
 
+            # Apply inverse log transform if data was log-transformed
+            log_transformed = batch.get('log_transformed', torch.tensor(False))
+            if log_transformed.any():
+                pred_for_metrics = inverse_log_transform(pred)
+                target_for_metrics = inverse_log_transform(target)
+            else:
+                pred_for_metrics = pred
+                target_for_metrics = target
+
             # Compute extended metrics including region-wise and diagnostics
-            metrics = compute_all_metrics_extended(pred, target, sigma, source, spacing)
+            metrics = compute_all_metrics_extended(pred_for_metrics, target_for_metrics, sigma, source, spacing)
             all_metrics.append(metrics)
 
             total_loss += loss_dict['loss']
@@ -221,12 +230,12 @@ def validate(
             total_spectral += loss_dict.get('spectral_loss', 0.0)
             num_batches += 1
 
-            # Save comprehensive visualizations
+            # Save comprehensive visualizations (use inverse-transformed values)
             if save_visualizations and batch_idx < 3:  # Save for first 3 samples
                 vis_dir = os.path.join(exp_dir, "visualizations", split_name)
                 mask = create_combined_mask(sigma, source)
                 save_validation_figure(
-                    pred[0], target[0],
+                    pred_for_metrics[0], target_for_metrics[0],
                     mask=mask[0],
                     source=source[0],
                     epoch=epoch,
@@ -296,18 +305,28 @@ def evaluate_on_split(
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing)
 
-            metrics = compute_all_metrics_extended(pred, target, sigma, source, spacing)
+            # Apply inverse log transform if data was log-transformed
+            # Metrics should be computed in original space for fair comparison
+            log_transformed = batch.get('log_transformed', torch.tensor(False))
+            if log_transformed.any():
+                pred_for_metrics = inverse_log_transform(pred)
+                target_for_metrics = inverse_log_transform(target)
+            else:
+                pred_for_metrics = pred
+                target_for_metrics = target
+
+            metrics = compute_all_metrics_extended(pred_for_metrics, target_for_metrics, sigma, source, spacing)
             all_metrics.append(metrics)
             total_loss += loss_dict['loss']
             num_batches += 1
 
-            # Save visualization for all test samples
+            # Save visualization for all test samples (use inverse-transformed values)
             mask = create_combined_mask(sigma, source)
 
             # Comprehensive 3D visualization for first 5 samples
             if batch_idx < 5:
                 create_comprehensive_visualization(
-                    pred[0], target[0],
+                    pred_for_metrics[0], target_for_metrics[0],
                     source=source[0],
                     mask=mask[0],
                     title_prefix=f"{split_name.capitalize()} Sample {batch_idx}",
@@ -318,7 +337,7 @@ def evaluate_on_split(
             # Fiber potential visualization for ALL samples
             try:
                 create_fiber_visualization(
-                    pred, target, source,
+                    pred_for_metrics, target_for_metrics, source,
                     sample_idx=batch_idx,
                     resolution=f"{split_name}",
                     output_dir=os.path.join(vis_dir, "fiber_potentials"),
@@ -411,6 +430,7 @@ def main():
     singularity_mode = experiment_config.get('singularity_mask_mode', 'radius')
     singularity_percentile = experiment_config.get('singularity_percentile', 99.0)
     distance_weight_alpha = loss_config.get('distance_weight_alpha', 0.0)
+    use_muscle_mask = experiment_config.get('use_muscle_mask', False)
 
     criterion = CombinedLoss(
         mse_weight=loss_weights.get('mse', 1.0),
@@ -419,16 +439,19 @@ def main():
         pde_weight=loss_config.get('pde_weight', 0.0),
         tv_weight=loss_config.get('tv_weight', 0.01),
         gradient_matching_weight=loss_config.get('gradient_matching_weight', 0.0),
+        laplacian_matching_weight=loss_config.get('laplacian_matching_weight', 0.0),
         use_singularity_mask=use_singularity_mask,
         singularity_mode=singularity_mode,
         singularity_percentile=singularity_percentile,
         distance_weight_alpha=distance_weight_alpha,
+        use_muscle_mask=use_muscle_mask,
     )
 
     # Log loss configuration
     print(f"Loss config: tv_weight={loss_config.get('tv_weight', 0.01)}, "
           f"gradient_matching_weight={loss_config.get('gradient_matching_weight', 0.0)}, "
           f"use_singularity_mask={use_singularity_mask}, "
+          f"use_muscle_mask={use_muscle_mask}, "
           f"distance_weight_alpha={distance_weight_alpha}")
 
     # Setup TensorBoard writer

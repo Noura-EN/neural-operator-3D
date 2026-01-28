@@ -5,6 +5,8 @@ from .loader import (
     create_data_splits,
     get_dataloaders,
     load_exclusion_list,
+    log_transform,
+    inverse_log_transform,
 )
 from .transforms import (
     resample_volume,
@@ -18,6 +20,8 @@ __all__ = [
     "create_data_splits",
     "get_dataloaders",
     "load_exclusion_list",
+    "log_transform",
+    "inverse_log_transform",
     "resample_volume",
     "resample_batch",
     "normalize_field",
