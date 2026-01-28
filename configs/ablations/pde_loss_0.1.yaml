@@ -1,0 +1,57 @@
+# PDE residual loss: enforces physics equally everywhere
+# Loss = MSE + 0.1 * PDE_residual
+data:
+  data_dir: data
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+  normalize_target: false
+
+model:
+  backbone: fno
+  add_analytical_solution: true
+  geometry_encoder:
+    enabled: true
+    hidden_dim: 64
+    num_layers: 2
+  fno:
+    modes1: 8
+    modes2: 8
+    modes3: 8
+    width: 32
+    num_layers: 6
+    fc_dim: 128
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler: cosine
+  scheduler_params:
+    T_max: 100
+    eta_min: 0.000001
+  checkpoint_dir: checkpoints
+  checkpoint_freq: 10
+  early_stopping_patience: 10
+  early_stopping_delta: 0.000001
+
+loss:
+  pde_weight: 0.1  # Add PDE residual loss
+  tv_weight: 0.01
+  gradient_matching_weight: 0.0
+
+physics:
+  mse:
+    singularity_mask_radius: 3
+
+experiment:
+  use_singularity_mask: true
+
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: logs
+  experiment_name: pde_loss_0.1

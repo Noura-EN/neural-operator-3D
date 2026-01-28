@@ -15,11 +15,63 @@ I have added data so there are now 500 samples of 48x48x96 within `data` and 500
 - ✓ Residual learning ablation (didn't help)
 - ✓ Option 4 vs 5 comparison (no spacing ± analytical)
 - ✓ Neural operator architecture comparison (TFNO, U-NO, DeepONet, LSM vs FNO)
+- ✓ Per-sample target normalization (baseline is best - normalization hurts)
+- ✓ Loss masking strategies (3-voxel radius is optimal, larger masks hurt)
 
 **REMAINING IDEAS:**
 1. Multi-Task Learning: Add auxiliary losses (boundary conditions)
 2. Data Augmentation: Random crops, flips, rotations (respecting physics symmetries)
 3. Uncertainty Quantification: Ensemble methods or MC dropout for confidence estimates
+
+---
+
+## Per-Sample Normalization & Masking Experiments
+
+### Hypothesis
+Far-from-source regions have weak signals dominated by near-source in MSE loss. We tested whether:
+1. Per-sample target normalization would help far-region predictions
+2. Percentile-based loss masking (excluding high values) would improve far-region accuracy
+
+### Masking Strategy Comparison (Raw Targets)
+
+Trained models with different loss masks, all predicting raw values:
+
+| Model | Full Muscle | Near 10% | Far 90% |
+|-------|-------------|----------|---------|
+| **Baseline (3 voxel radius)** | **0.1859** | **0.2024** | **0.1746** |
+| Mask top 1% (99th pct) | 0.3329 | 0.4580 | 0.2352 (+35%) |
+| Mask top 10% (90th pct) | 0.4926 | 0.6846 | 0.3046 (+74%) |
+
+### Per-Sample Normalization Comparison
+
+Normalized models evaluated on their respective normalized targets (no denormalization):
+
+| Model | Evaluation Region | Rel L2 |
+|-------|-------------------|--------|
+| Baseline (raw) | Far-90 | **0.1746** |
+| Norm99 (normalized) | Far-99 | 0.4030 |
+| Norm90 (normalized) | Far-90 | 0.3981 |
+
+### Key Findings
+
+1. **Baseline (3-voxel mask) wins everywhere**: Best in near, far, and overall regions
+2. **More masking hurts**: Excluding more high-value voxels degrades performance in ALL regions
+3. **Normalization hurts**: Per-sample normalization makes the learning problem harder
+4. **Strong signals help**: Near-source high values provide useful learning gradients for the entire field
+
+### Why These Approaches Failed
+
+1. **Loss of learning signal**: High-value regions provide strong gradients that help the model learn field structure
+2. **Changed correlations**: Normalization alters spatial correlations the FNO relies on
+3. **Per-sample inconsistency**: Different normalization per sample creates inconsistent targets
+4. **3-voxel is optimal**: Only excludes numerical artifacts, preserves physics information
+
+### Recommendation
+
+Use **baseline approach** (3-voxel radius mask, raw targets). Do not use:
+- Per-sample target normalization
+- Percentile-based loss masking
+- Two-model approaches (baseline is best in all regions)
 
 ---
 

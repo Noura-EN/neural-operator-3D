@@ -39,6 +39,7 @@ from src.utils.visualization import (
     save_validation_figure, plot_loss_curves,
     create_comprehensive_visualization
 )
+from scripts.visualize_fiber_potential import create_fiber_visualization
 from src.utils.training import EarlyStopping, ExperimentTracker
 
 
@@ -300,9 +301,11 @@ def evaluate_on_split(
             total_loss += loss_dict['loss']
             num_batches += 1
 
-            # Save visualization for first 5 samples
+            # Save visualization for all test samples
+            mask = create_combined_mask(sigma, source)
+
+            # Comprehensive 3D visualization for first 5 samples
             if batch_idx < 5:
-                mask = create_combined_mask(sigma, source)
                 create_comprehensive_visualization(
                     pred[0], target[0],
                     source=source[0],
@@ -311,6 +314,19 @@ def evaluate_on_split(
                     save_dir=vis_dir,
                     sample_idx=batch_idx,
                 )
+
+            # Fiber potential visualization for ALL samples
+            try:
+                create_fiber_visualization(
+                    pred, target, source,
+                    sample_idx=batch_idx,
+                    resolution=f"{split_name}",
+                    output_dir=os.path.join(vis_dir, "fiber_potentials"),
+                    num_fibers=10,
+                    mask=mask,
+                )
+            except Exception as e:
+                print(f"Warning: Could not create fiber visualization for sample {batch_idx}: {e}")
 
     # Aggregate metrics
     avg_metrics = {'loss': total_loss / num_batches}
@@ -391,6 +407,10 @@ def main():
     loss_config = config.get('loss', {})
 
     use_singularity_mask = config.get('experiment', {}).get('use_singularity_mask', True)
+    experiment_config = config.get('experiment', {})
+    singularity_mode = experiment_config.get('singularity_mask_mode', 'radius')
+    singularity_percentile = experiment_config.get('singularity_percentile', 99.0)
+    distance_weight_alpha = loss_config.get('distance_weight_alpha', 0.0)
 
     criterion = CombinedLoss(
         mse_weight=loss_weights.get('mse', 1.0),
@@ -400,12 +420,16 @@ def main():
         tv_weight=loss_config.get('tv_weight', 0.01),
         gradient_matching_weight=loss_config.get('gradient_matching_weight', 0.0),
         use_singularity_mask=use_singularity_mask,
+        singularity_mode=singularity_mode,
+        singularity_percentile=singularity_percentile,
+        distance_weight_alpha=distance_weight_alpha,
     )
 
     # Log loss configuration
     print(f"Loss config: tv_weight={loss_config.get('tv_weight', 0.01)}, "
           f"gradient_matching_weight={loss_config.get('gradient_matching_weight', 0.0)}, "
-          f"use_singularity_mask={use_singularity_mask}")
+          f"use_singularity_mask={use_singularity_mask}, "
+          f"distance_weight_alpha={distance_weight_alpha}")
 
     # Setup TensorBoard writer
     log_dir = os.path.join(exp_dir, "logs")
