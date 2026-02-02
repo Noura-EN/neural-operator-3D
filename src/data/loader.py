@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from scipy import ndimage
 
 
 def log_transform(x: torch.Tensor) -> torch.Tensor:
@@ -72,6 +73,7 @@ class PotentialFieldDataset(Dataset):
         device: str = "cpu",
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
+        add_distance_field: bool = False,
         normalize_target: bool = False,
         singularity_percentile: float = 99.0,
         log_transform_target: bool = False,
@@ -84,6 +86,7 @@ class PotentialFieldDataset(Dataset):
             device: Device to load tensors to
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, compute and add monopole analytical solution
+            add_distance_field: If True, compute and add signed distance to muscle boundary
             normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
             singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
             log_transform_target: If True, apply signed log transform to compress dynamic range
@@ -92,6 +95,7 @@ class PotentialFieldDataset(Dataset):
         self.device = device
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
+        self.add_distance_field = add_distance_field
         self.normalize_target = normalize_target
         self.singularity_percentile = singularity_percentile
         self.log_transform_target = log_transform_target
@@ -134,6 +138,38 @@ class PotentialFieldDataset(Dataset):
 
         return coords
 
+    def _compute_distance_to_boundary(
+        self,
+        mask: np.ndarray,
+        spacing: np.ndarray,
+    ) -> torch.Tensor:
+        """Compute signed distance field from muscle boundary.
+
+        Positive values inside muscle, negative outside.
+        Normalized by max distance for scale invariance.
+
+        Args:
+            mask: Binary muscle mask (D, H, W)
+            spacing: Physical voxel spacing (3,)
+
+        Returns:
+            Signed distance field (1, D, H, W), normalized to [-1, 1]
+        """
+        # Compute distance transform for inside and outside
+        # Inside muscle (mask=1): positive distance to boundary
+        dist_inside = ndimage.distance_transform_edt(mask, sampling=spacing)
+        # Outside muscle (mask=0): negative distance to boundary
+        dist_outside = ndimage.distance_transform_edt(1 - mask, sampling=spacing)
+
+        # Signed distance: positive inside, negative outside
+        signed_dist = dist_inside - dist_outside
+
+        # Normalize to [-1, 1] for network input stability
+        max_dist = max(np.abs(signed_dist).max(), 1e-6)
+        signed_dist_normalized = signed_dist / max_dist
+
+        return torch.from_numpy(signed_dist_normalized).unsqueeze(0).float()
+
     def _compute_analytical_solution(
         self,
         sigma: np.ndarray,
@@ -157,6 +193,8 @@ class PotentialFieldDataset(Dataset):
         D, H, W = grid_shape
 
         # Compute σ_avg from muscle region diagonal conductivity
+        # Using muscle average because the field propagates through muscle tissue
+        # (source point often has artificially low σ due to electrode modeling)
         # sigma has shape (D, H, W, 6) with diagonal at indices 0, 1, 2
         sigma_diag = sigma[..., :3]  # (D, H, W, 3)
         muscle_mask = mask > 0.5
@@ -345,6 +383,14 @@ class PotentialFieldDataset(Dataset):
             )
             result['analytical'] = analytical
 
+        # Optionally add distance-to-boundary field
+        if self.add_distance_field:
+            distance_field = self._compute_distance_to_boundary(
+                mask=data['mask'],
+                spacing=data['spacing'],
+            )
+            result['distance_field'] = distance_field
+
         return result
 
 
@@ -499,6 +545,7 @@ class CombinedPotentialFieldDataset(Dataset):
         samples: List[Tuple[Path, int]],
         add_spacing_channels: bool = False,
         add_analytical_solution: bool = False,
+        add_distance_field: bool = False,
         normalize_target: bool = False,
         singularity_percentile: float = 99.0,
         log_transform_target: bool = False,
@@ -509,6 +556,7 @@ class CombinedPotentialFieldDataset(Dataset):
             samples: List of (directory, sample_index) tuples
             add_spacing_channels: If True, add spacing as explicit input channels
             add_analytical_solution: If True, add monopole analytical solution
+            add_distance_field: If True, compute and add signed distance to muscle boundary
             normalize_target: If True, normalize target by muscle-region mean/std (excluding singularity)
             singularity_percentile: Percentile threshold for singularity mask (exclude top X%)
             log_transform_target: If True, apply signed log transform to compress dynamic range
@@ -516,6 +564,7 @@ class CombinedPotentialFieldDataset(Dataset):
         self.samples = samples
         self.add_spacing_channels = add_spacing_channels
         self.add_analytical_solution = add_analytical_solution
+        self.add_distance_field = add_distance_field
         self.normalize_target = normalize_target
         self.singularity_percentile = singularity_percentile
         self.log_transform_target = log_transform_target
@@ -551,7 +600,7 @@ class CombinedPotentialFieldDataset(Dataset):
         spacing: np.ndarray,
         grid_shape: Tuple[int, int, int],
     ) -> torch.Tensor:
-        """Compute analytical monopole solution."""
+        """Compute analytical monopole solution using muscle average conductivity."""
         D, H, W = grid_shape
         sigma_diag = sigma[..., :3]
         muscle_mask = mask > 0.5
@@ -578,6 +627,19 @@ class CombinedPotentialFieldDataset(Dataset):
 
         analytical = 1.0 / (4.0 * np.pi * sigma_avg * r)
         return torch.from_numpy(analytical).unsqueeze(0).float()
+
+    def _compute_distance_to_boundary(
+        self,
+        mask: np.ndarray,
+        spacing: np.ndarray,
+    ) -> torch.Tensor:
+        """Compute signed distance field from muscle boundary."""
+        dist_inside = ndimage.distance_transform_edt(mask, sampling=spacing)
+        dist_outside = ndimage.distance_transform_edt(1 - mask, sampling=spacing)
+        signed_dist = dist_inside - dist_outside
+        max_dist = max(np.abs(signed_dist).max(), 1e-6)
+        signed_dist_normalized = signed_dist / max_dist
+        return torch.from_numpy(signed_dist_normalized).unsqueeze(0).float()
 
     def _create_valid_mask(
         self,
@@ -681,6 +743,13 @@ class CombinedPotentialFieldDataset(Dataset):
             )
             result['analytical'] = analytical
 
+        if self.add_distance_field:
+            distance_field = self._compute_distance_to_boundary(
+                mask=data['mask'],
+                spacing=data['spacing'],
+            )
+            result['distance_field'] = distance_field
+
         return result
 
 
@@ -705,6 +774,9 @@ def get_dataloaders(
 
     # Analytical solution option
     add_analytical_solution = config.get('model', {}).get('add_analytical_solution', False)
+
+    # Distance field option
+    add_distance_field = config.get('model', {}).get('add_distance_field', False)
 
     # Normalization options
     normalize_target = data_config.get('normalize_target', False)
@@ -732,6 +804,7 @@ def get_dataloaders(
             samples=splits['train'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,
@@ -741,6 +814,7 @@ def get_dataloaders(
             samples=splits['val'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,
@@ -750,6 +824,7 @@ def get_dataloaders(
             samples=splits['test'],
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,
@@ -770,6 +845,7 @@ def get_dataloaders(
             sample_indices=train_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,
@@ -780,6 +856,7 @@ def get_dataloaders(
             sample_indices=val_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,
@@ -790,6 +867,7 @@ def get_dataloaders(
             sample_indices=test_indices,
             add_spacing_channels=add_spacing_channels,
             add_analytical_solution=add_analytical_solution,
+            add_distance_field=add_distance_field,
             normalize_target=normalize_target,
             singularity_percentile=singularity_percentile,
             log_transform_target=log_transform_target,

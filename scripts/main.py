@@ -127,8 +127,18 @@ def train_epoch(
         if analytical is not None:
             analytical = analytical.to(device)
 
+        # Handle distance field if present
+        distance_field = batch.get('distance_field', None)
+        if distance_field is not None:
+            distance_field = distance_field.to(device)
+
+        # Get mask for geometry attention backbone
+        mask = batch.get('mask', None)
+        if mask is not None:
+            mask = mask.to(device)
+
         optimizer.zero_grad()
-        pred = model(sigma, source, coords, spacing, analytical=analytical)
+        pred = model(sigma, source, coords, spacing, analytical=analytical, distance_field=distance_field, mask=mask)
 
         loss, loss_dict = criterion(pred, target, sigma, source, spacing, source_point)
 
@@ -206,7 +216,17 @@ def validate(
             if analytical is not None:
                 analytical = analytical.to(device)
 
-            pred = model(sigma, source, coords, spacing, analytical=analytical)
+            # Handle distance field if present
+            distance_field = batch.get('distance_field', None)
+            if distance_field is not None:
+                distance_field = distance_field.to(device)
+
+            # Get mask for geometry attention backbone
+            mask = batch.get('mask', None)
+            if mask is not None:
+                mask = mask.to(device)
+
+            pred = model(sigma, source, coords, spacing, analytical=analytical, distance_field=distance_field, mask=mask)
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing, source_point)
 
@@ -301,7 +321,17 @@ def evaluate_on_split(
             if analytical is not None:
                 analytical = analytical.to(device)
 
-            pred = model(sigma, source, coords, spacing, analytical=analytical)
+            # Handle distance field if present
+            distance_field = batch.get('distance_field', None)
+            if distance_field is not None:
+                distance_field = distance_field.to(device)
+
+            # Get mask for geometry attention backbone
+            mask = batch.get('mask', None)
+            if mask is not None:
+                mask = mask.to(device)
+
+            pred = model(sigma, source, coords, spacing, analytical=analytical, distance_field=distance_field, mask=mask)
 
             loss, loss_dict = criterion(pred, target, sigma, source, spacing)
 
@@ -334,18 +364,18 @@ def evaluate_on_split(
                     sample_idx=batch_idx,
                 )
 
-            # Fiber potential visualization for ALL samples
-            try:
-                create_fiber_visualization(
-                    pred_for_metrics, target_for_metrics, source,
-                    sample_idx=batch_idx,
-                    resolution=f"{split_name}",
-                    output_dir=os.path.join(vis_dir, "fiber_potentials"),
-                    num_fibers=10,
-                    mask=mask,
-                )
-            except Exception as e:
-                print(f"Warning: Could not create fiber visualization for sample {batch_idx}: {e}")
+            # Fiber potential visualization for ALL samples - DISABLED for faster runs
+            # try:
+            #     create_fiber_visualization(
+            #         pred_for_metrics, target_for_metrics, source,
+            #         sample_idx=batch_idx,
+            #         resolution=f"{split_name}",
+            #         output_dir=os.path.join(vis_dir, "fiber_potentials"),
+            #         num_fibers=10,
+            #         mask=mask,
+            #     )
+            # except Exception as e:
+            #     print(f"Warning: Could not create fiber visualization for sample {batch_idx}: {e}")
 
     # Aggregate metrics
     avg_metrics = {'loss': total_loss / num_batches}
@@ -376,10 +406,6 @@ def main():
     # Load configuration
     config = load_config(args.config)
 
-    # Set seed
-    seed = args.seed
-    set_seed(seed)
-
     # Get device
     device = get_device()
     print(f"Using device: {device}")
@@ -389,9 +415,13 @@ def main():
     exp_name = Path(exp_dir).name
     print(f"Experiment directory: {exp_dir}")
 
-    # Create dataloaders
+    # Create dataloaders with FIXED seed for reproducible splits across experiments
     print("Loading data...")
-    train_loader, val_loader, test_loader = get_dataloaders(config, seed=seed)
+    DATA_SPLIT_SEED = 42  # Always use same split for fair comparison
+    train_loader, val_loader, test_loader = get_dataloaders(config, seed=DATA_SPLIT_SEED)
+
+    # Now set the model seed (can vary for ensemble training)
+    set_seed(args.seed)
     print(f"Train: {len(train_loader.dataset)} samples, Val: {len(val_loader.dataset)} samples, Test: {len(test_loader.dataset)} samples")
 
     # Build model

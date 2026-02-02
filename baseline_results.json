@@ -1,0 +1,56 @@
+{
+  "trilinear": {
+    "highres_test_metrics": {
+      "mse": 7.588740227220114e-06,
+      "rmse": 0.002732821553945541,
+      "mae": 4.736486596812029e-05,
+      "relative_l2": 0.27177926898002625,
+      "max_error": 0.5449673342704773,
+      "mse_muscle": 1.0447885504527577e-08,
+      "rel_l2_muscle": 0.03363148270174861,
+      "mse_non_muscle": 8.72813810929074e-06,
+      "rel_l2_non_muscle": 0.25876748472452166,
+      "mse_near_singularity": 0.006816793493926525,
+      "rel_l2_near_singularity": 0.29116767466068266,
+      "mse_far_singularity": 2.4594980918557495e-09,
+      "rel_l2_far_singularity": 0.01571343969553709,
+      "mse_muscle_far": 1.258601161485684e-10,
+      "rel_l2_muscle_far": 0.004666664018295705,
+      "l2_norm_ratio": 1.0663083577156067,
+      "mean_abs_ratio": 1.0100581860542297,
+      "gradient_energy_ratio": 1.0545029735565186,
+      "laplacian_energy_ratio": 0.5212197262048721,
+      "l2_norm_ratio_muscle": 1.0072540163993835,
+      "mean_abs_ratio_muscle": 1.000700056552887,
+      "gradient_energy_ratio_muscle": 1.0133235836029053,
+      "laplacian_energy_ratio_muscle": 0.5547984969615937
+    },
+    "params": 0,
+    "inference_time_ms": 0.5
+  },
+  "unet": {
+    "params": 23717729,
+    "inference_time_ms": 14.74418009747751,
+    "inference_time_std_ms": 0.11713304701507467
+  },
+  "fno_analytical": {
+    "params": 12723745,
+    "inference_time_ms": 10.048569380305707,
+    "inference_time_std_ms": 0.15634812714037594
+  },
+  "fno_no_analytical": {
+    "params": 12723681,
+    "inference_time_ms": 10.035823979415,
+    "inference_time_std_ms": 0.1404898559706253
+  },
+  "fno_geom_attn": {
+    "params": 12742305,
+    "inference_time_ms": 14.966993097332306,
+    "inference_time_std_ms": 0.19015614445861667
+  },
+  "tfno": {
+    "params": 12723745,
+    "inference_time_ms": 11.351335382205434,
+    "inference_time_std_ms": 0.16421943334302622
+  }
+}

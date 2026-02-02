@@ -25,14 +25,39 @@ The goal is to predict 3D potential fields (φ) from conductivity tensors (σ) a
 - Point source creates a singularity with values approaching infinity near the source
 - Target values span many orders of magnitude (~10⁻⁵ to ~10¹)
 - Model must generalize across different muscle geometries and source locations
-- Far-from-source regions are harder to predict accurately due to smaller signal magnitudes
+- **Muscle region predictions lack smoothness** - fiber potential visualizations show noisy/incorrect spatial patterns
+- Current best muscle Rel L2 = 0.136, but predictions often have wrong shape
 
-Every approach that attempts to improve far-region learning makes far-region performance WORSE.                                                                  
-                                                                                                                                                                  
-Why? The Hypothesis                                                                                                                                              
-                                                                                                                                                                  
-The model seems to learn the far-field structure from the near-field structure. The potential field is physically smooth and continuous - learning the strong    
-gradients near the source helps the model understand the global field topology, which then informs far-region predictions.
+### Tissue Geometry
+
+The data has a layered cylindrical structure (from center outward):
+
+| Layer | Conductivity | Description |
+|-------|--------------|-------------|
+| Center | Low (bone/tendon) | ~0.02 S/m isotropic |
+| **Muscle** | **Anisotropic** | σ_xx=0.2455, σ_yy=0.2455, σ_zz=1.2275 S/m |
+| Fat/Skin | Isotropic | σ=0.0379 S/m |
+| Background | Zero | Outside tissue |
+
+**Critical finding**: The **source is in the fat layer**, NOT in muscle. It is ~6 voxels from the muscle boundary. This means:
+- The "mask" field in data includes ALL tissue (muscle + fat), not just muscle
+- True muscle mask must be computed from conductivity values
+- Loss should be evaluated on muscle region only for the target application
+
+### Why Muscle-Only Training Fails
+
+Training with loss computed only on muscle tissue produces **worse** muscle predictions:
+
+| Metric | Baseline | Muscle-only | Change |
+|--------|----------|-------------|--------|
+| Muscle Rel L2 | **0.136** | 0.220 | +62% worse |
+| Muscle Far Rel L2 | **0.134** | 0.228 | +70% worse |
+| L2 Norm Ratio (muscle) | 0.986 | 0.960 | Similar |
+| Grad Energy Ratio (muscle) | **1.021** | 0.884 | Too smooth |
+
+The muscle-only model has correct scale but **over-smoothed predictions** (grad ratio 0.88 < 1.0). It misses the fine spatial structure that the baseline learns from the high-gradient fat/source region.
+
+**Hypothesis**: The model learns far-field structure from near-field gradients. The potential field is physically continuous - learning the strong gradients near the source helps understand the global field topology, which then informs muscle predictions.
 
 ---
 
@@ -332,6 +357,96 @@ python scripts/run_ablation.py configs/ablations/layers_6.yaml
 
 ---
 
+## Current Performance Issues
+
+### Muscle Region Metrics (Best Model: layers=6)
+
+| Metric | Value | Target | Status |
+|--------|-------|--------|--------|
+| Muscle Rel L2 | 0.136 | <0.10 | ❌ Not good enough |
+| Muscle Far Rel L2 | 0.134 | <0.10 | ❌ Not good enough |
+| L2 Norm Ratio (muscle) | 0.986 | ~1.0 | ✅ Good |
+| Grad Energy Ratio (muscle) | 1.021 | ~1.0 | ✅ Good |
+| Laplacian Ratio (muscle) | 2.39 | ~1.0 | ❌ Too noisy |
+
+### Observed Problems
+
+1. **Fiber potential visualizations show incorrect spatial patterns** - the shape/topology is often wrong even when scale is correct
+2. **Laplacian ratio >> 1** indicates high-frequency noise/artifacts
+3. **13.6% relative error on muscle** is too high for downstream applications
+
+---
+
+## Ideas to Improve Muscle Performance
+
+### Architecture Changes
+
+| Idea | Rationale | Difficulty |
+|------|-----------|------------|
+| **U-FNO (encoder-decoder FNO)** | Multi-scale features, better local detail | Medium |
+| **Factorized FNO (F-FNO)** | Separable spectral convolutions, more modes without memory explosion | Medium |
+| **Geometry-Adaptive FNO (Geo-FNO)** | Learn domain deformation to handle irregular muscle geometry | High |
+| **Add skip connections to FNO** | Preserve high-frequency details through network | Low |
+| **Deeper projection head** | fc_dim: 128→256→128→1 instead of 128→1 | Low |
+
+### Loss Function Changes
+
+| Idea | Rationale | Difficulty |
+|------|-----------|------------|
+| **Increase gradient loss weight** | Current 0.5 may not be enough; try 1.0-2.0 | Low |
+| **SSIM loss on slices** | Structural similarity captures spatial patterns better than MSE | Medium |
+| **Perceptual loss (pretrained 3D features)** | Learn perceptually meaningful features | High |
+| **Frequency-weighted loss** | Weight mid-frequency errors more (where structure lives) | Medium |
+| **Adversarial/GAN loss** | Discriminator enforces realistic spatial patterns | High |
+
+### Data/Training Changes
+
+| Idea | Rationale | Difficulty |
+|------|-----------|------------|
+| **More training data** | 352 samples may still be limiting; try 1000+ | Medium (data generation) |
+| **Data augmentation** | Rotations, flips, elastic deformations | Low |
+| **Curriculum learning** | Start with easy samples (source far from muscle), progress to hard | Medium |
+| **Multi-resolution training** | Train on multiple grid resolutions simultaneously | Medium |
+| **Pre-train on synthetic data** | Generate simple analytical solutions for pre-training | Medium |
+
+### Physics-Informed Approaches
+
+| Idea | Rationale | Difficulty |
+|------|-----------|------------|
+| **Stronger PDE constraint** | Current pde_weight=0 didn't help; try soft constraint via architecture | High |
+| **Green's function decomposition** | Predict correction to analytical solution in Fourier space | Medium |
+| **Neural operator + FEM hybrid** | Use FNO for coarse solution, refine with learned FEM correction | High |
+| **Encode boundary conditions explicitly** | Add BC satisfaction as hard constraint | Medium |
+
+### Post-Processing
+
+| Idea | Rationale | Difficulty |
+|------|-----------|------------|
+| **Bilateral filtering** | Smooth while preserving edges | Low |
+| **Guided filtering (by conductivity)** | Use conductivity as guide for edge-aware smoothing | Low |
+| **One-step FEM refinement** | Use FNO output as initial guess, run 1-2 FEM iterations | Medium |
+
+---
+
+## Recommended Next Experiments
+
+**Priority 1 (Quick wins):**
+1. Increase gradient loss weight: try 1.0, 2.0
+2. Add skip connections to FNO blocks
+3. Try bilateral/guided filtering as post-processing
+
+**Priority 2 (Medium effort):**
+4. U-FNO architecture with encoder-decoder structure
+5. SSIM loss component
+6. Data augmentation (flips, rotations)
+
+**Priority 3 (More effort):**
+7. Generate more training data (target 1000+ samples)
+8. Factorized FNO for more modes without memory issues
+9. Frequency-weighted loss
+
+---
+
 ## Summary
 
 The optimal configuration for this dataset is:
@@ -341,4 +456,4 @@ The optimal configuration for this dataset is:
 - **3-voxel singularity mask** (excludes numerical artifacts)
 - **Additive spacing conditioning** (resolution independence)
 
-This achieves Test Rel L2 = 0.157 with near-perfect scale (0.97) and smoothness (0.97).
+This achieves Test Rel L2 = 0.118 overall, **Muscle Rel L2 = 0.136** with good scale (0.99) but the spatial patterns in muscle are often incorrect. Further improvements needed for downstream fiber potential applications.
