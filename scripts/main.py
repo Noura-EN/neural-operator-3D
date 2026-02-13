@@ -461,6 +461,7 @@ def main():
     singularity_percentile = experiment_config.get('singularity_percentile', 99.0)
     distance_weight_alpha = loss_config.get('distance_weight_alpha', 0.0)
     use_muscle_mask = experiment_config.get('use_muscle_mask', False)
+    mean_center_target = loss_config.get('mean_center_target', False)
 
     criterion = CombinedLoss(
         mse_weight=loss_weights.get('mse', 1.0),
@@ -475,6 +476,7 @@ def main():
         singularity_percentile=singularity_percentile,
         distance_weight_alpha=distance_weight_alpha,
         use_muscle_mask=use_muscle_mask,
+        mean_center_target=mean_center_target,
     )
 
     # Log loss configuration
@@ -482,7 +484,8 @@ def main():
           f"gradient_matching_weight={loss_config.get('gradient_matching_weight', 0.0)}, "
           f"use_singularity_mask={use_singularity_mask}, "
           f"use_muscle_mask={use_muscle_mask}, "
-          f"distance_weight_alpha={distance_weight_alpha}")
+          f"distance_weight_alpha={distance_weight_alpha}, "
+          f"mean_center_target={mean_center_target}")
 
     # Setup TensorBoard writer
     log_dir = os.path.join(exp_dir, "logs")

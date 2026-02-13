@@ -147,7 +147,7 @@ def main():
 
     # Load data
     print("Loading data...")
-    with open(PROJECT_ROOT / 'configs/ablations/fno_analytical_standard.yaml') as f:
+    with open(PROJECT_ROOT / 'configs/fno_standard.yaml') as f:
         config = yaml.safe_load(f)
 
     DATA_SPLIT_SEED = 42
@@ -170,11 +170,10 @@ def main():
 
     # Model configs and checkpoints
     models_to_test = {
-        'unet': ('configs/ablations/unet_standard.yaml', 'unet_standard_seed42'),
-        'fno_analytical': ('configs/ablations/fno_analytical_standard.yaml', 'fno_analytical_standard_seed42'),
-        'fno_no_analytical': ('configs/ablations/fno_no_analytical_standard.yaml', 'fno_no_analytical_standard_seed42'),
-        'fno_geom_attn': ('configs/ablations/fno_geom_attn_standard.yaml', 'fno_geom_attn_standard_seed42'),
-        'tfno': ('configs/ablations/tfno_standard.yaml', 'tfno_standard_seed42'),
+        'unet': ('configs/unet_standard.yaml', 'unet_standard_seed42'),
+        'fno_analytical': ('configs/fno_standard.yaml', 'fno_analytical_standard_seed42'),
+        'fno_geom_attn': ('configs/fno_geom_attn_standard.yaml', 'fno_geom_attn_standard_seed42'),
+        'tfno': ('configs/tfno_standard.yaml', 'tfno_standard_seed42'),
     }
 
     print("\n=== Inference Time Measurements ===")
@@ -234,7 +233,7 @@ def main():
     print(f"{'Model':<20} {'Params':<12} {'Inference (ms)':<15} {'High-Res Rel L2':<15}")
     print("-"*70)
     print(f"{'Trilinear':<20} {'0':<12} {'<1':<15} {trilinear_metrics['relative_l2']:.4f}")
-    for model_name in ['unet', 'fno_analytical', 'fno_no_analytical', 'fno_geom_attn', 'tfno']:
+    for model_name in ['unet', 'fno_analytical', 'fno_geom_attn', 'tfno']:
         if model_name in results:
             r = results[model_name]
             params_str = f"{r['params']/1e6:.2f}M"

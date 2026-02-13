@@ -628,6 +628,7 @@ class CombinedLoss(nn.Module):
         singularity_percentile: float = 99.0,  # Used if mode="percentile"
         distance_weight_alpha: float = 0.0,  # Distance weighting: 0=none, >0=upweight far
         use_muscle_mask: bool = False,  # If True, compute loss only on muscle region
+        mean_center_target: bool = False,  # If True, mean-center both pred and target before loss
     ):
         """Initialize combined loss.
 
@@ -644,6 +645,8 @@ class CombinedLoss(nn.Module):
             singularity_percentile: Percentile threshold if mode="percentile"
             distance_weight_alpha: Distance weighting factor (weight = 1 + alpha * normalized_dist)
             use_muscle_mask: If True, compute loss only on muscle region (conductivity-based)
+            mean_center_target: If True, mean-center both pred and target before computing loss
+                               (useful for Green's function models that produce zero-mean outputs)
         """
         super().__init__()
 
@@ -653,6 +656,7 @@ class CombinedLoss(nn.Module):
         self.singularity_percentile = singularity_percentile
         self.distance_weight_alpha = distance_weight_alpha
         self.use_muscle_mask = use_muscle_mask
+        self.mean_center_target = mean_center_target
 
         # Primary MSE loss - we'll compute mask dynamically for percentile mode
         effective_radius = singularity_radius if (use_singularity_mask and singularity_mode == "radius") else 0
@@ -717,6 +721,14 @@ class CombinedLoss(nn.Module):
         Returns:
             Tuple of (total_loss, loss_dict with individual components)
         """
+        # Mean-center both pred and target if enabled (for Green's function models)
+        if self.mean_center_target:
+            # Mean-center each sample independently
+            pred_mean = pred.mean(dim=(2, 3, 4), keepdim=True)
+            target_mean = target.mean(dim=(2, 3, 4), keepdim=True)
+            pred = pred - pred_mean
+            target = target - target_mean
+
         # Compute masks based on configuration
         # Start with all-ones mask (include everything)
         mask = torch.ones_like(pred)

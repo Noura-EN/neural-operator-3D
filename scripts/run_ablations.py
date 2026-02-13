@@ -2,14 +2,13 @@
 """
 Ablation study runner for neural operator experiments.
 
-Runs 90 experiments:
-- 5 model types × 2 training configs × 10 seeds = 90 experiments
+Runs 70 experiments:
+- 4 model types × 2 training configs × 10 seeds = 70 experiments
   (UNet only runs standard, not mixed)
 
 Models:
 - UNet (standard only)
-- FNO with analytical solution (standard + mixed)
-- FNO without analytical solution (standard + mixed)
+- FNO (standard + mixed)
 - FNO with geometry attention (standard + mixed)
 - TFNO (standard + mixed)
 
@@ -29,13 +28,11 @@ import argparse
 PROJECT_ROOT = Path(__file__).parent.parent
 
 # Experiment configurations
+# (config_filename, model_name, training_type)
 EXPERIMENTS = [
-    # (config_name, model_name, training_type)
     ("unet_standard", "unet", "standard"),
-    ("fno_analytical_standard", "fno_analytical", "standard"),
-    ("fno_analytical_mixed", "fno_analytical", "mixed"),
-    ("fno_no_analytical_standard", "fno_no_analytical", "standard"),
-    ("fno_no_analytical_mixed", "fno_no_analytical", "mixed"),
+    ("fno_standard", "fno_analytical", "standard"),
+    ("fno_mixed", "fno_analytical", "mixed"),
     ("fno_geom_attn_standard", "fno_geom_attn", "standard"),
     ("fno_geom_attn_mixed", "fno_geom_attn", "mixed"),
     ("tfno_standard", "tfno", "standard"),
@@ -82,7 +79,7 @@ def check_experiment_completed(exp_name: str) -> bool:
 
 def run_experiment(config_name: str, exp_name: str, seed: int) -> subprocess.Popen:
     """Start an experiment process."""
-    config_path = PROJECT_ROOT / "configs" / "ablations" / f"{config_name}.yaml"
+    config_path = PROJECT_ROOT / "configs" / f"{config_name}.yaml"
 
     cmd = [
         "python3", str(PROJECT_ROOT / "scripts" / "main.py"),
@@ -133,7 +130,7 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS,
                         help="Seeds to run")
     parser.add_argument("--models", type=str, nargs="+",
-                        help="Models to run (unet, fno_analytical, fno_no_analytical, fno_geom_attn, tfno)")
+                        help="Models to run (unet, fno_analytical, fno_geom_attn, tfno)")
     args = parser.parse_args()
 
     # Build experiment queue
